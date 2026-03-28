@@ -1,0 +1,26 @@
+{
+  "name": "glitter-atlas",
+  "private": true,
+  "packageManager": "pnpm@10.6.0",
+  "scripts": {
+    "dev": "concurrently -k -n shared,web,api,worker \"pnpm --filter @glitter-atlas/shared dev\" \"pnpm --filter @glitter-atlas/web dev\" \"pnpm --filter @glitter-atlas/api dev\" \"pnpm --filter @glitter-atlas/worker dev\"",
+    "dev:web": "concurrently -k -n shared,web \"pnpm --filter @glitter-atlas/shared dev\" \"pnpm --filter @glitter-atlas/web dev\"",
+    "dev:api": "concurrently -k -n shared,api \"pnpm --filter @glitter-atlas/shared dev\" \"pnpm --filter @glitter-atlas/api dev\"",
+    "dev:worker": "concurrently -k -n shared,worker \"pnpm --filter @glitter-atlas/shared dev\" \"pnpm --filter @glitter-atlas/worker dev\"",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.24.0",
+    "@types/node": "^22.14.1",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.24.0",
+    "eslint-config-next": "^16.0.0",
+    "eslint-config-prettier": "^10.1.1",
+    "globals": "^16.0.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.29.1"
+  }
+}

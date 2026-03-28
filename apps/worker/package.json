@@ -1,0 +1,26 @@
+{
+  "name": "@glitter-atlas/worker",
+  "private": true,
+  "scripts": {
+    "dev": "node --watch --import tsx src/main.ts",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "start": "node dist/worker/src/main.js",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.888.0",
+    "@aws-sdk/s3-request-presigner": "^3.888.0",
+    "@glitter-atlas/shared": "workspace:*",
+    "@nestjs/common": "latest",
+    "@nestjs/config": "latest",
+    "@nestjs/core": "latest",
+    "dotenv": "^17.2.3",
+    "drizzle-orm": "^0.44.5",
+    "pg": "^8.16.3",
+    "reflect-metadata": "latest",
+    "rxjs": "latest"
+  },
+  "devDependencies": {
+    "tsx": "latest"
+  }
+}

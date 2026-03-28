@@ -1,0 +1,21 @@
+{
+  "name": "@glitter-atlas/shared",
+  "version": "0.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "concurrently -k \"tsup src/index.ts --format esm,cjs --watch\" \"tsc -p tsconfig.json --emitDeclarationOnly --watch\"",
+    "build": "tsup src/index.ts --format esm,cjs && tsc -p tsconfig.json --emitDeclarationOnly",
+    "lint": "eslint src --ext .ts"
+  },
+  "devDependencies": {
+    "tsup": "latest"
+  }
+}
