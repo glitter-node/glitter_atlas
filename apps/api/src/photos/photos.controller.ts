@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Inject,
   Param,
   Post,
@@ -41,6 +42,7 @@ export class PhotosController {
   }
 
   @Post(':id/complete')
+  @HttpCode(200)
   completeUpload(
     @Param('id') id: string,
     @Body() body: CompletePhotoUploadInput,
