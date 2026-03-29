@@ -52,7 +52,7 @@ export class AssetsController {
     assetKey: AssetRouteKey,
   ) {
     const asset = this.getAssetDefinition(assetKey);
-    const assetPath = join(this.assetsRootPath, asset.fileName);
+    const assetPath = join(this.assetsRootPath, asset.relativePath);
 
     try {
       await access(assetPath);
@@ -69,31 +69,31 @@ export class AssetsController {
     switch (assetKey) {
       case 'favicon':
         return {
-          fileName: 'favicon.ico',
+          relativePath: 'gimg/favicon/favicon.ico',
           contentType: 'image/x-icon',
           cacheControl: 'public, max-age=31536000, immutable',
         };
       case 'robots':
         return {
-          fileName: 'atlas.glitter.kr_robots.txt',
+          relativePath: 'atlas.glitter.kr_robots.txt',
           contentType: 'text/plain; charset=utf-8',
           cacheControl: 'no-cache',
         };
       case 'sitemap':
         return {
-          fileName: 'atlas.glitter.kr_sitemap.xml',
+          relativePath: 'atlas.glitter.kr_sitemap.xml',
           contentType: 'application/xml; charset=utf-8',
           cacheControl: 'public, max-age=3600',
         };
       case 'manifest':
         return {
-          fileName: 'atlas-kr-site.webmanifest',
+          relativePath: 'atlas-kr-site.webmanifest',
           contentType: 'application/manifest+json; charset=utf-8',
           cacheControl: 'public, max-age=31536000, immutable',
         };
       case 'ogDefault':
         return {
-          fileName: 'og-default.png',
+          relativePath: 'og-default.png',
           contentType: 'image/png',
           cacheControl: 'public, max-age=31536000, immutable',
         };

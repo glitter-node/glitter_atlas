@@ -8,6 +8,7 @@ import {
   Param,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import type {
   CleanupAbandonedUploadsInput,
@@ -18,6 +19,8 @@ import type {
   CreatePhotoUploadResponse,
   GetPhotoResponse,
 } from '@glitter-atlas/shared';
+import { RequireAuthAccess } from '../auth/auth-access.decorator';
+import { AuthGuard } from '../auth/auth.guard';
 import { PhotosService } from './photos.service';
 
 @Controller('photos')
@@ -28,6 +31,8 @@ export class PhotosController {
   ) {}
 
   @Post('uploads')
+  @UseGuards(AuthGuard)
+  @RequireAuthAccess('approved')
   createUpload(
     @Body() body: CreatePhotoUploadInput,
   ): Promise<CreatePhotoUploadResponse> {
@@ -35,6 +40,8 @@ export class PhotosController {
   }
 
   @Post('cleanup/abandoned')
+  @UseGuards(AuthGuard)
+  @RequireAuthAccess('super_admin')
   cleanupAbandoned(
     @Body() body?: CleanupAbandonedUploadsInput,
   ): Promise<CleanupAbandonedUploadsResponse> {
@@ -43,6 +50,8 @@ export class PhotosController {
 
   @Post(':id/complete')
   @HttpCode(200)
+  @UseGuards(AuthGuard)
+  @RequireAuthAccess('approved')
   completeUpload(
     @Param('id') id: string,
     @Body() body: CompletePhotoUploadInput,
@@ -58,11 +67,15 @@ export class PhotosController {
   }
 
   @Get(':id')
+  @UseGuards(AuthGuard)
+  @RequireAuthAccess('approved')
   getPhoto(@Param('id') id: string): Promise<GetPhotoResponse> {
     return this.photosService.getPhoto(this.normalizePhotoId(id));
   }
 
   @Get()
+  @UseGuards(AuthGuard)
+  @RequireAuthAccess('approved')
   listPhotos(
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,

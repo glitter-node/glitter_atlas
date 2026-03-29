@@ -109,8 +109,88 @@ export const photoLocations = pgTable(
   }),
 );
 
+export const approvedUsers = pgTable(
+  'approved_users',
+  {
+    id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+    email: varchar('email', { length: 320 }).notNull(),
+    normalizedEmail: varchar('normalized_email', { length: 320 }).notNull(),
+    passwordHash: varchar('password_hash', { length: 255 }),
+    isActive: boolean('is_active').notNull().default(true),
+    isSuperAdmin: boolean('is_super_admin').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    normalizedEmailUnique: unique('uq_approved_users_normalized_email').on(
+      table.normalizedEmail,
+    ),
+  }),
+);
+
+export const emailVerificationTokens = pgTable(
+  'email_verification_tokens',
+  {
+    id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+    email: varchar('email', { length: 320 }).notNull(),
+    normalizedEmail: varchar('normalized_email', { length: 320 }).notNull(),
+    selector: char('selector', { length: 24 }).notNull(),
+    tokenHash: char('token_hash', { length: 64 }).notNull(),
+    purpose: varchar('purpose', { length: 20 }).notNull().default('login'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    requestedIp: varchar('requested_ip', { length: 64 }),
+    requestedUserAgent: text('requested_user_agent'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    selectorUnique: unique('uq_email_verification_tokens_selector').on(
+      table.selector,
+    ),
+  }),
+);
+
+export const authSessions = pgTable(
+  'auth_sessions',
+  {
+    id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity().primaryKey(),
+    sessionTokenHash: char('session_token_hash', { length: 64 }).notNull(),
+    email: varchar('email', { length: 320 }).notNull(),
+    normalizedEmail: varchar('normalized_email', { length: 320 }).notNull(),
+    sessionType: varchar('session_type', { length: 20 }).notNull(),
+    approvedUserId: bigint('approved_user_id', { mode: 'number' }).references(
+      () => approvedUsers.id,
+      { onDelete: 'set null' },
+    ),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdIp: varchar('created_ip', { length: 64 }),
+    createdUserAgent: text('created_user_agent'),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => ({
+    sessionTokenHashUnique: unique('uq_auth_sessions_session_token_hash').on(
+      table.sessionTokenHash,
+    ),
+  }),
+);
+
 export const schema = {
   photos,
   photoAssets,
   photoLocations,
+  approvedUsers,
+  emailVerificationTokens,
+  authSessions,
 };
