@@ -539,6 +539,10 @@ export class PhotosService {
   }
 
   private validateInput(input: CreatePhotoUploadInput) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new BadRequestException('Request body is required');
+    }
+
     if (!input.fileName?.trim()) {
       throw new BadRequestException('fileName is required');
     }
