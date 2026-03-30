@@ -1,18 +1,8 @@
 'use client';
 
+import type { SessionState } from '@glitter-atlas/shared';
 import { FormEvent, useEffect, useState } from 'react';
-
-type SessionState = {
-  authenticated: boolean;
-  sessionType: 'temporary' | 'approved' | null;
-  email: string | null;
-  isSuperAdmin: boolean;
-};
-
-type PendingApprovalCandidate = {
-  email: string;
-  lastSeenAt: string;
-};
+import { AdminApprovalPanel } from './admin_approval_panel';
 
 const anonymousSession: SessionState = {
   authenticated: false,
@@ -27,7 +17,6 @@ export function AuthGate() {
   const [emailSent, setEmailSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [pendingApprovals, setPendingApprovals] = useState<PendingApprovalCandidate[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -49,30 +38,8 @@ export function AuthGate() {
         }
 
         setSession(data);
+        setError(null);
         setEmailSent(false);
-
-        if (data.authenticated && data.isSuperAdmin) {
-          const pendingResponse = await fetch('/api/auth/admin/pending-approvals', {
-            credentials: 'same-origin',
-          });
-
-          if (!pendingResponse.ok) {
-            throw new Error('Failed to load pending approvals.');
-          }
-
-          const pendingData = (await pendingResponse.json()) as {
-            items?: PendingApprovalCandidate[];
-          };
-
-          if (!active) {
-            return;
-          }
-
-          setPendingApprovals(pendingData.items ?? []);
-          return;
-        }
-
-        setPendingApprovals([]);
       } catch (fetchError) {
         if (!active) {
           return;
@@ -160,50 +127,11 @@ export function AuthGate() {
       }
 
       setSession(anonymousSession);
-      setPendingApprovals([]);
       setEmail('');
       setEmailSent(false);
     } catch (logoutError) {
       const message =
         logoutError instanceof Error ? logoutError.message : 'Failed to log out.';
-      setError(message);
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  async function handleApprove(emailToApprove: string) {
-    setIsSubmitting(true);
-    setError(null);
-
-    try {
-      const response = await fetch('/api/auth/admin/approve', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'same-origin',
-        body: JSON.stringify({ email: emailToApprove }),
-      });
-
-      if (!response.ok) {
-        const data = (await response.json().catch(() => null)) as
-          | { message?: string | string[] }
-          | null;
-        const message = Array.isArray(data?.message)
-          ? data?.message[0]
-          : data?.message;
-        throw new Error(message ?? 'Failed to approve email.');
-      }
-
-      setPendingApprovals((current) =>
-        current.filter((candidate) => candidate.email !== emailToApprove),
-      );
-    } catch (approvalError) {
-      const message =
-        approvalError instanceof Error
-          ? approvalError.message
-          : 'Failed to approve email.';
       setError(message);
     } finally {
       setIsSubmitting(false);
@@ -322,33 +250,7 @@ export function AuthGate() {
                   </div>
                 ) : null}
                 {session.isSuperAdmin ? (
-                  <div className="surface-note surface-note-admin">
-                    <h2>Pending approvals</h2>
-                    {pendingApprovals.length === 0 ? (
-                      <p>No pending temporary users are waiting for approval.</p>
-                    ) : (
-                      <div className="approval-list">
-                        {pendingApprovals.map((candidate) => (
-                          <div className="approval-item" key={candidate.email}>
-                            <div>
-                              <p className="approval-email">{candidate.email}</p>
-                              <p className="approval-meta">
-                                Last seen {new Date(candidate.lastSeenAt).toLocaleString()}
-                              </p>
-                            </div>
-                            <button
-                              className="button button-secondary"
-                              type="button"
-                              onClick={() => handleApprove(candidate.email)}
-                              disabled={isSubmitting}
-                            >
-                              {isSubmitting ? 'Working...' : 'Approve'}
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <AdminApprovalPanel />
                 ) : null}
                 <button className="button" type="button" onClick={handleLogout} disabled={isSubmitting}>
                   {isSubmitting ? 'Signing out...' : 'Log out'}

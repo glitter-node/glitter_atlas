@@ -112,3 +112,10 @@ export type CleanupAbandonedUploadsResponse = {
   abandonedCount: number;
   cutoff: string;
 };
+
+export type SessionState = {
+  authenticated: boolean;
+  sessionType: 'temporary' | 'approved' | null;
+  email: string | null;
+  isSuperAdmin: boolean;
+};

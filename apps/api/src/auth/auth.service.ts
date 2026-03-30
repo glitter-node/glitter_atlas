@@ -6,16 +6,10 @@ import {
   NotFoundException,
   GoneException,
 } from '@nestjs/common';
+import type { SessionState } from '@glitter-atlas/shared';
 import { createHash, randomBytes } from 'node:crypto';
 import { DatabaseService } from '../database/database.service';
 import { MailService } from '../mail/mail.service';
-
-export type SessionState = {
-  authenticated: boolean;
-  sessionType: 'temporary' | 'approved' | null;
-  email: string | null;
-  isSuperAdmin: boolean;
-};
 
 type PendingApprovalCandidate = {
   email: string;
