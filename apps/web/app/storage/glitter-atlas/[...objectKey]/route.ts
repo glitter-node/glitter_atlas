@@ -1,6 +1,6 @@
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { NextRequest } from 'next/server';
 import { Readable } from 'node:stream';
+import { NextRequest } from 'next/server';
 
 export const runtime = 'nodejs';
 
@@ -81,11 +81,19 @@ export async function GET(
 
     headers.set('Cache-Control', 'public, max-age=3600');
 
-    return new Response(Readable.toWeb(result.Body) as ReadableStream, {
+    const chunks: Buffer[] = [];
+
+    for await (const chunk of result.Body) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+
+    const body = Buffer.concat(chunks);
+
+    return new Response(body, {
       status: 200,
       headers,
     });
-  } catch {
+  } catch (error) {
     return new Response('object not found', {
       status: 404,
       headers: {

@@ -1,0 +1,16 @@
+{
+  "37.6257,127.6675": {
+    "lat": 37.625651,
+    "lng": 127.6674723,
+    "cacheKey": "37.6257,127.6675",
+    "formattedAddress": "49-5 Daegok-ri, Seo-myeon, Hongcheon, Gangwon-do, South Korea",
+    "country": "South Korea",
+    "adminArea1": "Gangwon-do",
+    "adminArea2": null,
+    "locality": "Hongcheon",
+    "sublocality": "Daegok-ri",
+    "postalCode": "25103",
+    "placeId": "ChIJwXYjLo4XYzURSPeHTnsw7SA",
+    "source": "google"
+  }
+}

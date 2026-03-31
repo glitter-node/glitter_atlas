@@ -2,7 +2,7 @@
   "name": "@glitter-atlas/web",
   "private": true,
   "scripts": {
-    "dev": "next dev --hostname 127.0.0.1 --port 4000",
+    "dev": "bash -lc 'set -a; source ../../.env 2>/dev/null || true; source .env.development 2>/dev/null || true; source .env.local 2>/dev/null || true; set +a; next dev --hostname 127.0.0.1 --port 4000'",
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 4000",
     "lint": "eslint ."

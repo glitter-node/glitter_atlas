@@ -1,0 +1,20 @@
+export type PhotoMeta = {
+  filePath: string;
+  fileName: string;
+  extension: string;
+  mimeType: string | null;
+  capturedAt: string | null;
+  year: string | null;
+  month: string | null;
+  day: string | null;
+  cameraMake: string | null;
+  cameraModel: string | null;
+  lensModel: string | null;
+  gpsLat: number | null;
+  gpsLng: number | null;
+  gpsAltitude: number | null;
+  width: number | null;
+  height: number | null;
+  orientation: number | null;
+  sha256: string;
+};
