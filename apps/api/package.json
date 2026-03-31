@@ -2,7 +2,7 @@
   "name": "@glitter-atlas/api",
   "private": true,
   "scripts": {
-    "dev": "node --watch --import tsx src/main.ts",
+    "dev": "tsc -p tsconfig.json && concurrently -k \"tsc -w -p tsconfig.json\" \"node --watch dist/main.js\"",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "lint": "eslint src --ext .ts"

@@ -87,7 +87,9 @@ export class PhotosService {
     private readonly databaseService: DatabaseService,
     @Inject(StorageService)
     private readonly storageService: StorageService,
-  ) {}
+  ) {
+    console.log('[api] PhotosService.constructor');
+  }
 
   async createUpload(
     input: CreatePhotoUploadInput,
@@ -745,6 +747,7 @@ export class PhotosService {
       kind: row.kind,
       bucket: row.bucket,
       objectKey: row.object_key,
+      displayUrl: this.storageService.getObjectUrl(row.object_key),
       mimeType: row.mime_type,
       sizeBytes: Number(row.size_bytes),
       width: row.width,

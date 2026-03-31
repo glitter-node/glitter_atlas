@@ -64,6 +64,7 @@ export type PhotoAssetRecord = {
   kind: string;
   bucket: string;
   objectKey: string;
+  displayUrl: string;
   mimeType: string;
   sizeBytes: number;
   width: number | null;

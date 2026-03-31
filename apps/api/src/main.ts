@@ -8,11 +8,15 @@ import {
 import { AppModule } from './app.module';
 
 async function bootstrap() {
+  console.log('[api] bootstrap start');
+  console.log('[api] before NestFactory.create');
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter(),
   );
+  console.log('[api] after NestFactory.create');
 
+  console.log('[api] before addHook');
   app
     .getHttpAdapter()
     .getInstance()
@@ -31,10 +35,16 @@ async function bootstrap() {
 
       return payload;
     });
+  console.log('[api] after addHook');
 
-  const host = process.env.API_HOST ?? '127.0.0.1';
-  const port = Number(process.env.API_PORT ?? 4100);
-  await app.listen(port, host);
+  const host = '127.0.0.1';
+  const port = 4100;
+  console.log(`[api] before listen http://${host}:${port}`);
+  await app.listen({ host, port });
+  console.log(`[api] after listen http://${host}:${port}`);
 }
 
-bootstrap();
+bootstrap().catch((error: unknown) => {
+  console.error('[api] bootstrap failed', error);
+  process.exit(1);
+});

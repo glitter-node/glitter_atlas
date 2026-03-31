@@ -13,7 +13,9 @@ export class MailService {
   constructor(
     @Inject(ConfigService)
     private readonly configService: ConfigService,
-  ) {}
+  ) {
+    console.log('[api] MailService.constructor');
+  }
 
   async sendMail(input: MailInput) {
     const host = this.configService.getOrThrow<string>('MAIL_HOST');

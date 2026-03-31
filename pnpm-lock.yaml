@@ -96,6 +96,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.888.0
+        version: 3.1019.0
       '@glitter-atlas/shared':
         specifier: workspace:*
         version: link:../../packages/shared

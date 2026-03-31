@@ -23,6 +23,7 @@ export class StorageService implements OnModuleInit {
   }
 
   onModuleInit() {
+    console.log('[api] StorageService.onModuleInit start');
     const endpoint = this.configService.getOrThrow<string>('S3_ENDPOINT');
     const region = this.configService.get<string>('S3_REGION') ?? 'us-east-1';
 
@@ -38,6 +39,7 @@ export class StorageService implements OnModuleInit {
 
     this.bucket = this.configService.getOrThrow<string>('S3_BUCKET');
     this.publicBaseUrl = this.configService.get<string>('S3_PUBLIC_BASE_URL') ?? null;
+    console.log('[api] StorageService.onModuleInit done');
   }
 
   async createUploadUrl(params: { objectKey: string; mimeType: string }) {

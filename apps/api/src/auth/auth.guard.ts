@@ -16,7 +16,9 @@ export class AuthGuard implements CanActivate {
     private readonly reflector: Reflector,
     @Inject(AuthService)
     private readonly authService: AuthService,
-  ) {}
+  ) {
+    console.log('[api] AuthGuard.constructor');
+  }
 
   async canActivate(context: ExecutionContext) {
     const requiredAccess = this.reflector.get<AuthAccessLevel | undefined>(

@@ -3,6 +3,13 @@
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
+type VerifyResponse = {
+  ok: boolean;
+  sessionType: 'temporary' | 'activation' | 'approved';
+  activationRequired: boolean;
+  email: string;
+};
+
 export function VerifyClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -40,11 +47,13 @@ export function VerifyClient() {
           throw new Error(message ?? 'Verification failed.');
         }
 
+        const data = (await response.json()) as VerifyResponse;
+
         if (!active) {
           return;
         }
 
-        router.replace('/');
+        router.replace(data.activationRequired ? '/auth/activate' : '/dashboard');
       } catch (verifyError) {
         if (!active) {
           return;

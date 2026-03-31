@@ -42,6 +42,11 @@ export class AssetsController {
     return this.sendAsset(reply, 'manifest');
   }
 
+  @Get('webmanifest')
+  async getWebmanifest(@Res() reply: { header: Function; type: Function; send: Function }) {
+    return this.sendAsset(reply, 'manifest');
+  }
+
   @Get('og/default.png')
   async getOgDefault(@Res() reply: { header: Function; type: Function; send: Function }) {
     return this.sendAsset(reply, 'ogDefault');

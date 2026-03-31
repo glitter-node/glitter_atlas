@@ -16,11 +16,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
+    console.log('[api] DatabaseService.onModuleInit start');
     const connectionString =
       this.configService.getOrThrow<string>('DATABASE_URL');
 
     this.pool = new Pool({ connectionString });
     this.db = drizzle(this.pool, { schema });
+    console.log('[api] DatabaseService.onModuleInit done');
   }
 
   async onModuleDestroy() {
