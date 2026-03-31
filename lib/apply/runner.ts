@@ -19,11 +19,11 @@ export async function applyPreviewItems(
         throw new Error('IMG_EXPORT_DATA is not configured')
       }
 
-      const sourcePath = resolveSafeSourcePath(sourceRoot, item.sourcePath)
+      const sourcePath = resolveSafeSourcePath(sourceRoot, item.filePath)
       const safeDestinationPath = resolveSafeDestination(
         targetRoot,
         item.decision.targetDir,
-        path.basename(item.sourcePath),
+        path.basename(item.filePath),
       )
       const targetDir = path.dirname(safeDestinationPath)
       await mkdir(targetDir, { recursive: true })

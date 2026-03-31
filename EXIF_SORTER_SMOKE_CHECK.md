@@ -13,7 +13,7 @@ bash -lc "tr '\0' '\n' < /proc/$(pgrep -f 'next dev' | head -n1)/environ | rg '^
 Confirm preview succeeds with env-only source selection:
 
 ```bash
-curl -sS http://127.0.0.1:4000/api/exif_sorter/preview \
+curl -sS "${APP_BASE_URL%/}/api/exif_sorter/preview" \
   -X POST \
   -H 'Content-Type: application/json' \
   --data '{}' > /tmp/exif_preview.json
@@ -54,7 +54,7 @@ This must verify:
 Fetch one sampled display URL from the public dev photo listing:
 
 ```bash
-curl -sS http://127.0.0.1:4000/api/dev/photos?limit=1 > /tmp/dev_photos.json
+curl -sS "${APP_BASE_URL%/}/api/dev/photos?limit=1" > /tmp/dev_photos.json
 node -e "const fs=require('node:fs'); const data=JSON.parse(fs.readFileSync('/tmp/dev_photos.json','utf8')); const url=data?.items?.[0]?.asset?.displayUrl; if(!url){process.exit(1)} console.log(url);"
 ```
 
@@ -89,4 +89,3 @@ Informational values:
 - `exif_date_only`
 - `mtime_fallback`
 - exact sampled `content-length`
-
