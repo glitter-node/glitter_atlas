@@ -6,6 +6,7 @@ type MailInput = {
   to: string;
   subject: string;
   text: string;
+  html?: string;
 };
 
 @Injectable()
@@ -41,13 +42,38 @@ export class MailService {
       },
     });
 
+    const html = typeof input.html === 'string' ? input.html : undefined;
+    const hasHtml = typeof html === 'string' && html.trim().length > 0;
+    const payload = {
+      from: fromName ? `"${fromName}" <${fromAddress}>` : fromAddress,
+      to: input.to,
+      subject: input.subject,
+      text: input.text,
+      ...(hasHtml
+        ? {
+            html,
+            alternatives: [
+              {
+                contentType: 'text/html; charset=utf-8',
+                content: html,
+              },
+            ],
+          }
+        : {}),
+    };
+
+    console.log('[api] MailService.sendMail payload', {
+      to: input.to,
+      subject: input.subject,
+      htmlType: typeof input.html,
+      htmlLength: hasHtml ? html.length : 0,
+      textType: typeof input.text,
+      payloadKeys: Object.keys(payload),
+      hasHtmlTemplateMarkers: hasHtml && /<(html|table|div)\b/i.test(html),
+    });
+
     try {
-      await transporter.sendMail({
-        from: fromName ? `"${fromName}" <${fromAddress}>` : fromAddress,
-        to: input.to,
-        subject: input.subject,
-        text: input.text,
-      });
+      await transporter.sendMail(payload);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'SMTP send failed';

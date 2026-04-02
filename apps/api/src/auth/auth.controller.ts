@@ -162,6 +162,21 @@ export class AuthController {
     return this.authService.listPendingApprovals();
   }
 
+  @Get('admin/members')
+  @UseGuards(AuthGuard)
+  @RequireAuthAccess('super_admin')
+  listMembersDirectory() {
+    return this.authService.listMembersDirectory();
+  }
+
+  @Post('admin/members/remove')
+  @UseGuards(AuthGuard)
+  @RequireAuthAccess('super_admin')
+  @HttpCode(200)
+  removeMember(@Body() body: { id?: number | string }) {
+    return this.authService.removeMember({ id: body?.id });
+  }
+
   @Post('admin/approve')
   @UseGuards(AuthGuard)
   @RequireAuthAccess('super_admin')

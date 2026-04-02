@@ -71,17 +71,95 @@ export function PhotoUploadClient() {
     setError(null);
 
     try {
+      const exifr = await import('exifr');
+      const exif = (await exifr.parse(file, {
+        gps: true,
+        tiff: true,
+        exif: true,
+      })) as {
+        latitude?: number;
+        longitude?: number;
+        lat?: number;
+        lon?: number;
+        gpsLatitude?: number;
+        gpsLongitude?: number;
+        DateTimeOriginal?: Date | string;
+        CreateDate?: Date | string;
+        dateTimeOriginal?: Date | string;
+      } | null;
+
+      console.log('raw exif', exif);
+
+      const latitudeCandidates = [
+        exif?.latitude,
+        exif?.lat,
+        exif?.gpsLatitude,
+      ];
+      const longitudeCandidates = [
+        exif?.longitude,
+        exif?.lon,
+        exif?.gpsLongitude,
+      ];
+      const latitude = latitudeCandidates.find(
+        (value): value is number =>
+          typeof value === 'number' && Number.isFinite(value),
+      );
+      const longitude = longitudeCandidates.find(
+        (value): value is number =>
+          typeof value === 'number' && Number.isFinite(value),
+      );
+      const capturedAtSource =
+        exif?.DateTimeOriginal ?? exif?.CreateDate ?? exif?.dateTimeOriginal;
+      const capturedAtDate =
+        capturedAtSource instanceof Date
+          ? capturedAtSource
+          : typeof capturedAtSource === 'string'
+            ? new Date(capturedAtSource)
+            : null;
+      const capturedAt =
+        capturedAtDate && !Number.isNaN(capturedAtDate.getTime())
+          ? capturedAtDate.toISOString()
+          : undefined;
+      const createPayload: {
+        fileName: string;
+        mimeType: string;
+        sizeBytes: number;
+        capturedAt?: string;
+        location?: {
+          latitude: number;
+          longitude: number;
+        };
+      } = {
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        sizeBytes: file.size,
+      };
+
+      if (capturedAt) {
+        createPayload.capturedAt = capturedAt;
+      }
+
+      if (
+        typeof latitude === 'number' &&
+        Number.isFinite(latitude) &&
+        typeof longitude === 'number' &&
+        Number.isFinite(longitude)
+      ) {
+        createPayload.location = {
+          latitude,
+          longitude,
+        };
+      }
+
+      console.log('create payload', createPayload);
+
       const createResponse = await fetch('/api/photos/uploads', {
         method: 'POST',
         credentials: 'same-origin',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          fileName: file.name,
-          mimeType: file.type || 'application/octet-stream',
-          sizeBytes: file.size,
-        }),
+        body: JSON.stringify(createPayload),
       });
 
       if (!createResponse.ok) {

@@ -4,6 +4,9 @@ const internalApiOrigin =
   process.env.INTERNAL_API_ORIGIN ?? 'http://127.0.0.1:4100';
 
 const nextConfig: NextConfig = {
+  compiler: {
+    removeConsole: true,
+  },
   transpilePackages: ['@glitter-atlas/shared'],
   async rewrites() {
     return [

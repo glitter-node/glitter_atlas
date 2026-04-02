@@ -37,8 +37,9 @@ async function bootstrap() {
     });
   console.log('[api] after addHook');
 
-  const host = '127.0.0.1';
-  const port = 4100;
+  const host = process.env.API_HOST?.trim() || '127.0.0.1';
+  const parsedPort = Number.parseInt(process.env.API_PORT ?? '', 10);
+  const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 4100;
   console.log(`[api] before listen http://${host}:${port}`);
   await app.listen({ host, port });
   console.log(`[api] after listen http://${host}:${port}`);

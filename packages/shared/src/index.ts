@@ -114,9 +114,16 @@ export type CleanupAbandonedUploadsResponse = {
   cutoff: string;
 };
 
+export const PHOTO_STATUS_PENDING = 'pending';
+export const PHOTO_STATUS_ABANDONED = 'abandoned';
+export const DEFAULT_UPLOAD_PENDING_TIMEOUT_MINUTES = 60;
+export const DEFAULT_CLEANUP_BATCH_LIMIT = 100;
+export const MAX_CLEANUP_BATCH_LIMIT = 1000;
+
 export type SessionState = {
   authenticated: boolean;
-  sessionType: 'temporary' | 'approved' | null;
+  sessionType: 'temporary' | 'activation' | 'approved' | null;
+  activationRequired: boolean;
   email: string | null;
   isSuperAdmin: boolean;
 };

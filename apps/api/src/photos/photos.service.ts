@@ -5,16 +5,22 @@ import {
   Inject,
   Injectable,
   InternalServerErrorException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import {
-  CompletePhotoUploadInput,
-  CompletePhotoUploadResponse,
   CleanupAbandonedUploadsInput,
   CleanupAbandonedUploadsResponse,
+  CompletePhotoUploadInput,
+  CompletePhotoUploadResponse,
   CreatePhotoUploadInput,
   CreatePhotoUploadResponse,
+  DEFAULT_CLEANUP_BATCH_LIMIT,
+  DEFAULT_UPLOAD_PENDING_TIMEOUT_MINUTES,
   GetPhotoResponse,
+  MAX_CLEANUP_BATCH_LIMIT,
+  PHOTO_STATUS_ABANDONED,
+  PHOTO_STATUS_PENDING,
   PhotoAssetRecord,
   PhotoLocationRecord,
   PhotoRecord,
@@ -26,10 +32,32 @@ import {
   StorageService,
 } from '../storage/storage.service';
 
-type ListPhotosInput = {
-  limit?: string;
-  cursor?: string;
-  status?: string;
+const UNKNOWN_COUNTRY = 'UNKNOWN_COUNTRY';
+const UNKNOWN_LOCALITY = 'UNKNOWN_LOCALITY';
+const UNKNOWN_DATE = 'UNKNOWN_DATE';
+const GEOCODE_VERSION = 'google-geocoding-v1';
+const PHOTO_VISIBILITY_PRIVATE = 'private';
+const PHOTO_VISIBILITY_SHARED = 'shared';
+
+
+type PhotoOwnerContext = {
+  approvedUserId: number;
+};
+
+type AdminPhotoFiltersInput = {
+  userId?: string;
+  visibility?: string;
+  includeDeleted?: string;
+  createdFrom?: string;
+  createdTo?: string;
+};
+
+type AdminPhotoFilters = {
+  userId: number | null;
+  visibility: 'private' | 'shared' | null;
+  includeDeleted: boolean;
+  createdFrom: Date | null;
+  createdTo: Date | null;
 };
 
 type DbPhotoRow = {
@@ -43,6 +71,10 @@ type DbPhotoRow = {
   created_at: Date | string;
   updated_at: Date | string;
   deleted_at: Date | string | null;
+};
+
+type DbAdminPhotoRow = DbPhotoRow & {
+  user_id: number | null;
 };
 
 type DbLocationRow = {
@@ -80,6 +112,19 @@ type DbAssetRow = {
   created_at: Date | string;
 };
 
+type UploadLocationMetadata = {
+  placeId: string | null;
+  countryCode: string | null;
+  admin1: string | null;
+  admin2: string | null;
+  locality: string | null;
+  sublocality: string | null;
+  route: string | null;
+  formattedAddress: string | null;
+  geocodeProvider: string | null;
+  geocodeVersion: string | null;
+};
+
 @Injectable()
 export class PhotosService {
   constructor(
@@ -93,16 +138,26 @@ export class PhotosService {
 
   async createUpload(
     input: CreatePhotoUploadInput,
+    owner: PhotoOwnerContext,
   ): Promise<CreatePhotoUploadResponse> {
     this.validateInput(input);
 
     const assetId = randomUUID();
     const uploadKeySeed = randomUUID();
-    const objectKey = this.buildObjectKey(
+    const locationMetadata = input.location
+      ? await this.reverseGeocodeUploadLocation(
+          input.location.latitude,
+          input.location.longitude,
+        )
+      : null;
+    const objectKey = this.buildObjectKey({
       uploadKeySeed,
       assetId,
-      input.fileName,
-    );
+      fileName: input.fileName,
+      capturedAt: input.capturedAt,
+      countryCode: locationMetadata?.countryCode ?? null,
+      locality: locationMetadata?.locality ?? locationMetadata?.sublocality ?? null,
+    });
 
     try {
       const upload = await this.storageService.createUploadUrl({
@@ -118,16 +173,18 @@ export class PhotosService {
       try {
         const photoResult = await client.query<DbPhotoRow>(
           `
-            insert into photos (title, description, captured_at, mime_type, checksum_sha256)
-            values ($1, $2, $3, $4, $5)
+            insert into photos (user_id, title, description, captured_at, mime_type, checksum_sha256, visibility)
+            values ($1, $2, $3, $4, $5, $6, $7)
             returning id, title, description, captured_at, mime_type, visibility, status, created_at, updated_at, deleted_at
           `,
           [
+            owner.approvedUserId,
             input.title ?? null,
             input.description ?? null,
             input.capturedAt ? new Date(input.capturedAt) : null,
             input.mimeType,
             checksum,
+            PHOTO_VISIBILITY_PRIVATE,
           ],
         );
 
@@ -138,15 +195,53 @@ export class PhotosService {
         if (input.location) {
           const locationResult = await client.query<DbLocationRow>(
             `
-              insert into photo_locations (photo_id, latitude, longitude)
-              values ($1, $2, $3)
+              insert into photo_locations (
+                photo_id,
+                latitude,
+                longitude,
+                place_id,
+                country_code,
+                admin1,
+                admin2,
+                locality,
+                sublocality,
+                route,
+                formatted_address,
+                geocode_provider,
+                geocode_version
+              )
+              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
               on conflict (photo_id) do update
               set latitude = excluded.latitude,
                   longitude = excluded.longitude,
+                  place_id = excluded.place_id,
+                  country_code = excluded.country_code,
+                  admin1 = excluded.admin1,
+                  admin2 = excluded.admin2,
+                  locality = excluded.locality,
+                  sublocality = excluded.sublocality,
+                  route = excluded.route,
+                  formatted_address = excluded.formatted_address,
+                  geocode_provider = excluded.geocode_provider,
+                  geocode_version = excluded.geocode_version,
                   updated_at = now()
               returning photo_id, latitude, longitude, altitude, accuracy_meters, place_id, country_code, admin1, admin2, locality, sublocality, route, formatted_address, geocode_provider, geocode_version, created_at, updated_at
             `,
-            [photoRow.id, input.location.latitude, input.location.longitude],
+            [
+              photoRow.id,
+              input.location.latitude,
+              input.location.longitude,
+              locationMetadata?.placeId ?? null,
+              locationMetadata?.countryCode ?? null,
+              locationMetadata?.admin1 ?? null,
+              locationMetadata?.admin2 ?? null,
+              locationMetadata?.locality ?? null,
+              locationMetadata?.sublocality ?? null,
+              locationMetadata?.route ?? null,
+              locationMetadata?.formattedAddress ?? null,
+              locationMetadata?.geocodeProvider ?? null,
+              locationMetadata?.geocodeVersion ?? null,
+            ],
           );
 
           locationRow = locationResult.rows[0];
@@ -214,7 +309,7 @@ export class PhotosService {
 
   async completeUpload(
     photoId: string,
-    input: CompletePhotoUploadInput,
+    input: CompletePhotoUploadInput & PhotoOwnerContext,
   ): Promise<CompletePhotoUploadResponse> {
     const normalizedPhotoId = this.normalizePhotoId(photoId);
 
@@ -227,9 +322,11 @@ export class PhotosService {
         select id, title, description, captured_at, mime_type, visibility, status, created_at, updated_at, deleted_at
         from photos
         where id = $1
+          and user_id = $2
+          and deleted_at is null
         limit 1
       `,
-      [normalizedPhotoId],
+      [normalizedPhotoId, input.approvedUserId],
     );
 
     if (photoResult.rows.length === 0) {
@@ -318,9 +415,11 @@ export class PhotosService {
         set status = 'ready',
             updated_at = now()
         where id = $1
+          and user_id = $2
+          and deleted_at is null
         returning id, title, description, captured_at, mime_type, visibility, status, created_at, updated_at, deleted_at
       `,
-      [normalizedPhotoId],
+      [normalizedPhotoId, input.approvedUserId],
     );
 
     return {
@@ -332,7 +431,10 @@ export class PhotosService {
     };
   }
 
-  async getPhoto(photoId: string): Promise<GetPhotoResponse> {
+  async getPhoto(
+    photoId: string,
+    owner: PhotoOwnerContext,
+  ): Promise<GetPhotoResponse> {
     const normalizedPhotoId = this.normalizePhotoId(photoId);
 
     const photoResult = await this.databaseService.pool.query<DbPhotoRow>(
@@ -340,9 +442,14 @@ export class PhotosService {
         select id, title, description, captured_at, mime_type, visibility, status, created_at, updated_at, deleted_at
         from photos
         where id = $1
+          and deleted_at is null
+          and (
+            user_id = $2
+            or visibility = $3
+          )
         limit 1
       `,
-      [normalizedPhotoId],
+      [normalizedPhotoId, owner.approvedUserId, PHOTO_VISIBILITY_SHARED],
     );
 
     if (photoResult.rows.length === 0) {
@@ -378,53 +485,299 @@ export class PhotosService {
     };
   }
 
-  async listPhotos(input: ListPhotosInput): Promise<{
+  async listPhotos(
+    owner: PhotoOwnerContext,
+  ): Promise<{
     items: GetPhotoResponse[];
     nextCursor: string | null;
   }> {
-    const limit = this.normalizeLimit(input.limit);
-    const status = input.status?.trim() ? input.status.trim() : null;
-    const cursor = this.parseCursor(input.cursor);
-    const params: Array<string | Date | number> = [];
-    let paramIndex = 1;
-    let whereClause = '';
-
-    if (status) {
-      whereClause = `where status = $${paramIndex}`;
-      params.push(status);
-      paramIndex += 1;
-    }
-
-    if (cursor) {
-      const cursorClause = `(created_at < $${paramIndex} or (created_at = $${paramIndex} and id < $${paramIndex + 1}))`;
-      params.push(cursor.createdAt, cursor.id);
-      paramIndex += 2;
-      whereClause = whereClause
-        ? `${whereClause} and ${cursorClause}`
-        : `where ${cursorClause}`;
-    }
-
-    params.push(limit);
-
     const photoResult = await this.databaseService.pool.query<DbPhotoRow>(
       `
         select id, title, description, captured_at, mime_type, visibility, status, created_at, updated_at, deleted_at
         from photos
+        where user_id = $1
+          and deleted_at is null
+        order by created_at desc, id desc
+      `,
+      [owner.approvedUserId],
+    );
+
+    return this.buildPhotoListResponse(photoResult.rows);
+  }
+
+  async listSharedPhotos(): Promise<{
+    items: GetPhotoResponse[];
+    nextCursor: string | null;
+  }> {
+    const photoResult = await this.databaseService.pool.query<DbPhotoRow>(
+      `
+        select id, title, description, captured_at, mime_type, visibility, status, created_at, updated_at, deleted_at
+        from photos
+        where visibility = $1
+          and deleted_at is null
+        order by created_at desc, id desc
+      `,
+      [PHOTO_VISIBILITY_SHARED],
+    );
+
+    return this.buildPhotoListResponse(photoResult.rows);
+  }
+
+  async listAdminPhotos(
+    input: AdminPhotoFiltersInput,
+  ): Promise<{
+    filters: {
+      userId: string | null;
+      visibility: 'private' | 'shared' | null;
+      includeDeleted: boolean;
+      createdFrom: string | null;
+      createdTo: string | null;
+    };
+    items: Array<{
+      photo: PhotoRecord & { userId: string | null };
+      location: PhotoLocationRecord | null;
+      asset: PhotoAssetRecord | null;
+    }>;
+  }> {
+    const filters = this.normalizeAdminPhotoFilters(input);
+    const values: Array<number | string | Date> = [];
+    const conditions: string[] = [];
+
+    if (filters.userId !== null) {
+      values.push(filters.userId);
+      conditions.push(`user_id = $${values.length}`);
+    }
+
+    if (filters.visibility !== null) {
+      values.push(filters.visibility);
+      conditions.push(`visibility = $${values.length}`);
+    }
+
+    if (!filters.includeDeleted) {
+      conditions.push('deleted_at is null');
+    }
+
+    if (filters.createdFrom !== null) {
+      values.push(filters.createdFrom);
+      conditions.push(`created_at >= $${values.length}`);
+    }
+
+    if (filters.createdTo !== null) {
+      values.push(filters.createdTo);
+      conditions.push(`created_at <= $${values.length}`);
+    }
+
+    const whereClause =
+      conditions.length > 0
+        ? `where ${conditions.join('\n          and ')}`
+        : '';
+
+    const photoResult = await this.databaseService.pool.query<DbAdminPhotoRow>(
+      `
+        select id, user_id, title, description, captured_at, mime_type, visibility, status, created_at, updated_at, deleted_at
+        from photos
         ${whereClause}
         order by created_at desc, id desc
-        limit $${paramIndex}
       `,
-      params,
+      values,
+    );
+
+    return {
+      filters: {
+        userId: filters.userId === null ? null : String(filters.userId),
+        visibility: filters.visibility,
+        includeDeleted: filters.includeDeleted,
+        createdFrom: filters.createdFrom ? filters.createdFrom.toISOString() : null,
+        createdTo: filters.createdTo ? filters.createdTo.toISOString() : null,
+      },
+      items: await this.buildAdminPhotoListResponse(photoResult.rows),
+    };
+  }
+
+  async getAdminPhoto(
+    photoId: string,
+  ): Promise<{
+    photo: PhotoRecord & { userId: string | null };
+    location: PhotoLocationRecord | null;
+    asset: PhotoAssetRecord | null;
+  }> {
+    const normalizedPhotoId = this.normalizePhotoId(photoId);
+
+    const photoResult = await this.databaseService.pool.query<DbAdminPhotoRow>(
+      `
+        select id, user_id, title, description, captured_at, mime_type, visibility, status, created_at, updated_at, deleted_at
+        from photos
+        where id = $1
+        limit 1
+      `,
+      [normalizedPhotoId],
     );
 
     if (photoResult.rows.length === 0) {
-      return {
-        items: [],
-        nextCursor: null,
-      };
+      throw new NotFoundException('photo not found');
     }
 
-    const photoIds = photoResult.rows.map((row) => row.id);
+    const locationResult = await this.databaseService.pool.query<DbLocationRow>(
+      `
+        select photo_id, latitude, longitude, altitude, accuracy_meters, place_id, country_code, admin1, admin2, locality, sublocality, route, formatted_address, geocode_provider, geocode_version, created_at, updated_at
+        from photo_locations
+        where photo_id = $1
+        limit 1
+      `,
+      [normalizedPhotoId],
+    );
+
+    const assetResult = await this.databaseService.pool.query<DbAssetRow>(
+      `
+        select id, photo_id, kind, bucket, object_key, mime_type, size_bytes, width, height, etag, is_original, created_at
+        from photo_assets
+        where photo_id = $1
+        order by created_at asc, id asc
+      `,
+      [normalizedPhotoId],
+    );
+
+    return {
+      photo: this.mapAdminPhoto(photoResult.rows[0]),
+      location: locationResult.rows[0]
+        ? this.mapLocation(locationResult.rows[0])
+        : null,
+      asset: this.selectBestAsset(assetResult.rows),
+    };
+  }
+
+  async setPhotoVisibility(
+    photoId: string,
+    visibility: string | undefined,
+    owner: PhotoOwnerContext,
+  ): Promise<{ ok: true; photoId: string; visibility: 'private' | 'shared' }> {
+    const normalizedPhotoId = this.normalizePhotoId(photoId);
+    const normalizedVisibility = this.normalizeVisibility(visibility);
+
+    const photoResult = await this.databaseService.pool.query<{
+      id: string;
+      user_id: number | null;
+      deleted_at: Date | string | null;
+    }>(
+      `
+        select id, user_id, deleted_at
+        from photos
+        where id = $1
+        limit 1
+      `,
+      [normalizedPhotoId],
+    );
+
+    if (photoResult.rows.length === 0) {
+      throw new NotFoundException('photo not found');
+    }
+
+    const photoRow = photoResult.rows[0];
+
+    if (photoRow.deleted_at) {
+      throw new NotFoundException('photo not found');
+    }
+
+    if (photoRow.user_id !== owner.approvedUserId) {
+      throw new ForbiddenException('photo ownership required');
+    }
+
+    const updatedResult = await this.databaseService.pool.query<DbPhotoRow>(
+      `
+        update photos
+        set visibility = $2,
+            updated_at = now()
+        where id = $1
+          and user_id = $3
+          and deleted_at is null
+        returning id, title, description, captured_at, mime_type, visibility, status, created_at, updated_at, deleted_at
+      `,
+      [normalizedPhotoId, normalizedVisibility, owner.approvedUserId],
+    );
+
+    if (updatedResult.rows.length === 0) {
+      throw new ForbiddenException('photo ownership required');
+    }
+
+    return {
+      ok: true,
+      photoId: normalizedPhotoId,
+      visibility: updatedResult.rows[0].visibility as 'private' | 'shared',
+    };
+  }
+
+  async deletePhoto(
+    photoId: string,
+    owner: PhotoOwnerContext,
+  ): Promise<{ ok: true; photoId: string; deleteMode: 'soft_delete' }> {
+    const normalizedPhotoId = this.normalizePhotoId(photoId);
+
+    const photoResult = await this.databaseService.pool.query<{
+      id: string;
+      user_id: number | null;
+      deleted_at: Date | string | null;
+    }>(
+      `
+        select id, user_id, deleted_at
+        from photos
+        where id = $1
+          and user_id = $2
+          and deleted_at is null
+        limit 1
+      `,
+      [normalizedPhotoId, owner.approvedUserId],
+    );
+
+    if (photoResult.rows.length === 0) {
+      throw new NotFoundException('photo not found');
+    }
+
+    const photoRow = photoResult.rows[0];
+
+    if (photoRow.user_id !== owner.approvedUserId) {
+      throw new ForbiddenException('photo ownership required');
+    }
+
+    if (photoRow.deleted_at) {
+      throw new NotFoundException('photo not found');
+    }
+
+    const updatedResult = await this.databaseService.pool.query<{ id: string }>(
+      `
+        update photos
+        set deleted_at = now(),
+            updated_at = now()
+        where id = $1
+          and user_id = $2
+          and deleted_at is null
+        returning id
+      `,
+      [normalizedPhotoId, owner.approvedUserId],
+    );
+
+    if (updatedResult.rows.length === 0) {
+      throw new ForbiddenException('photo ownership required');
+    }
+
+    return {
+      ok: true,
+      photoId: normalizedPhotoId,
+      deleteMode: 'soft_delete',
+    };
+  }
+
+  private async buildAdminPhotoListResponse(
+    photoRows: DbAdminPhotoRow[],
+  ): Promise<Array<{
+    photo: PhotoRecord & { userId: string | null };
+    location: PhotoLocationRecord | null;
+    asset: PhotoAssetRecord | null;
+  }>> {
+    if (photoRows.length === 0) {
+      return [];
+    }
+
+    const photoIds = photoRows.map((row) => row.id);
 
     const locationResult = await this.databaseService.pool.query<DbLocationRow>(
       `
@@ -460,25 +813,73 @@ export class PhotosService {
       }
     }
 
-    const items = photoResult.rows.map((row) => ({
-      photo: this.mapPhoto(row),
+    return photoRows.map((row) => ({
+      photo: this.mapAdminPhoto(row),
       location: locationByPhotoId.get(row.id)
         ? this.mapLocation(locationByPhotoId.get(row.id)!)
         : null,
       asset: this.selectBestAsset(assetsByPhotoId.get(row.id) ?? []),
     }));
+  }
 
-    const lastRow = photoResult.rows[photoResult.rows.length - 1];
+  private async buildPhotoListResponse(
+    photoRows: DbPhotoRow[],
+  ): Promise<{
+    items: GetPhotoResponse[];
+    nextCursor: string | null;
+  }> {
+    if (photoRows.length === 0) {
+      return {
+        items: [],
+        nextCursor: null,
+      };
+    }
+
+    const photoIds = photoRows.map((row) => row.id);
+
+    const locationResult = await this.databaseService.pool.query<DbLocationRow>(
+      `
+        select photo_id, latitude, longitude, altitude, accuracy_meters, place_id, country_code, admin1, admin2, locality, sublocality, route, formatted_address, geocode_provider, geocode_version, created_at, updated_at
+        from photo_locations
+        where photo_id = any($1::bigint[])
+      `,
+      [photoIds],
+    );
+
+    const assetResult = await this.databaseService.pool.query<DbAssetRow>(
+      `
+        select id, photo_id, kind, bucket, object_key, mime_type, size_bytes, width, height, etag, is_original, created_at
+        from photo_assets
+        where photo_id = any($1::bigint[])
+        order by created_at asc, id asc
+      `,
+      [photoIds],
+    );
+
+    const locationByPhotoId = new Map<string, DbLocationRow>();
+    for (const row of locationResult.rows) {
+      locationByPhotoId.set(row.photo_id, row);
+    }
+
+    const assetsByPhotoId = new Map<string, DbAssetRow[]>();
+    for (const row of assetResult.rows) {
+      const existing = assetsByPhotoId.get(row.photo_id);
+      if (existing) {
+        existing.push(row);
+      } else {
+        assetsByPhotoId.set(row.photo_id, [row]);
+      }
+    }
 
     return {
-      items,
-      nextCursor:
-        photoResult.rows.length === limit
-          ? this.encodeCursor({
-              createdAt: this.toIso(lastRow.created_at)!,
-              id: String(lastRow.id),
-            })
+      items: photoRows.map((row) => ({
+        photo: this.mapPhoto(row),
+        location: locationByPhotoId.get(row.id)
+          ? this.mapLocation(locationByPhotoId.get(row.id)!)
           : null,
+        asset: this.selectBestAsset(assetsByPhotoId.get(row.id) ?? []),
+      })),
+      nextCursor: null,
     };
   }
 
@@ -497,8 +898,9 @@ export class PhotosService {
       `
         select p.id
         from photos p
-        where p.status = 'pending'
+        where p.status = $3
           and p.created_at < $1
+          and p.user_id is not null
           and exists (
             select 1
             from photo_assets pa
@@ -507,7 +909,7 @@ export class PhotosService {
         order by p.created_at asc, p.id asc
         limit $2
       `,
-      [cutoff, limit],
+      [cutoff, limit, PHOTO_STATUS_PENDING],
     );
 
     const photoIds = candidateResult.rows.map((row) => row.id);
@@ -525,12 +927,13 @@ export class PhotosService {
     }>(
       `
         update photos
-        set status = 'abandoned',
+        set status = $2,
             updated_at = now()
         where id = any($1::bigint[])
+          and user_id is not null
         returning id
       `,
-      [photoIds],
+      [photoIds, PHOTO_STATUS_ABANDONED],
     );
 
     return {
@@ -538,6 +941,69 @@ export class PhotosService {
       abandonedCount: updatedResult.rows.length,
       cutoff: cutoff.toISOString(),
     };
+  }
+
+  private normalizeAdminPhotoFilters(input: AdminPhotoFiltersInput): AdminPhotoFilters {
+    const userId = input.userId?.trim() ? this.normalizeNumericFilter(input.userId, 'user_id') : null;
+    const visibility = input.visibility?.trim()
+      ? this.normalizeVisibility(input.visibility)
+      : null;
+    const includeDeleted = this.normalizeBooleanFilter(input.includeDeleted);
+    const createdFrom = this.normalizeOptionalDateFilter(input.createdFrom, 'created_from');
+    const createdTo = this.normalizeOptionalDateFilter(input.createdTo, 'created_to');
+
+    if (createdFrom && createdTo && createdFrom.getTime() > createdTo.getTime()) {
+      throw new BadRequestException('created_from must be before created_to');
+    }
+
+    return {
+      userId,
+      visibility,
+      includeDeleted,
+      createdFrom,
+      createdTo,
+    };
+  }
+
+  private normalizeNumericFilter(value: string, label: string) {
+    const normalized = value.trim();
+
+    if (!/^\d+$/.test(normalized)) {
+      throw new BadRequestException(`${label} must be numeric`);
+    }
+
+    return Number(normalized);
+  }
+
+  private normalizeBooleanFilter(value?: string) {
+    if (!value) {
+      return false;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+
+  private normalizeOptionalDateFilter(value: string | undefined, label: string) {
+    if (!value?.trim()) {
+      return null;
+    }
+
+    const normalized = new Date(value);
+
+    if (Number.isNaN(normalized.getTime())) {
+      throw new BadRequestException(`${label} must be a valid ISO date`);
+    }
+
+    return normalized;
+  }
+
+  private normalizeVisibility(value: string | undefined): 'private' | 'shared' {
+    if (value === PHOTO_VISIBILITY_PRIVATE || value === PHOTO_VISIBILITY_SHARED) {
+      return value;
+    }
+
+    throw new BadRequestException('visibility must be private or shared');
   }
 
   private validateInput(input: CreatePhotoUploadInput) {
@@ -574,9 +1040,252 @@ export class PhotosService {
     }
   }
 
-  private buildObjectKey(photoId: string, assetId: string, fileName: string) {
-    const sanitized = fileName.replace(/[^a-zA-Z0-9._-]/g, '-');
-    return `photos/${photoId}/${assetId}-${sanitized}`;
+  private buildObjectKey(input: {
+    uploadKeySeed: string;
+    assetId: string;
+    fileName: string;
+    capturedAt?: string;
+    countryCode: string | null;
+    locality: string | null;
+  }) {
+    const prefix = this.normalizeStoragePrefix(process.env.IMG_EXPORT_TARGET);
+    const countryCode = this.normalizeCountryCode(input.countryCode);
+    const locality = this.normalizeLocality(input.locality);
+    const exifDate = this.normalizeExifDate(input.capturedAt);
+    const normalizedFileName = this.normalizeFileName(
+      input.fileName,
+      input.assetId || input.uploadKeySeed,
+    );
+
+    return [prefix, countryCode, locality, exifDate, normalizedFileName]
+      .filter((segment) => segment.length > 0)
+      .join('/');
+  }
+
+  private async reverseGeocodeUploadLocation(
+    latitude: number,
+    longitude: number,
+  ): Promise<UploadLocationMetadata | null> {
+    const apiKey = process.env.GOOGLE_MAPS_API_KEY?.trim();
+
+    if (!apiKey) {
+      return {
+        placeId: null,
+        countryCode: null,
+        admin1: null,
+        admin2: null,
+        locality: null,
+        sublocality: null,
+        route: null,
+        formattedAddress: null,
+        geocodeProvider: 'none',
+        geocodeVersion: GEOCODE_VERSION,
+      };
+    }
+
+    const searchParams = new URLSearchParams({
+      latlng: `${latitude},${longitude}`,
+      key: apiKey,
+      language: 'en',
+    });
+
+    try {
+      const response = await fetch(
+        `https://maps.googleapis.com/maps/api/geocode/json?${searchParams.toString()}`,
+        {
+          method: 'GET',
+          cache: 'no-store',
+        },
+      );
+
+      if (!response.ok) {
+        return {
+          placeId: null,
+          countryCode: null,
+          admin1: null,
+          admin2: null,
+          locality: null,
+          sublocality: null,
+          route: null,
+          formattedAddress: null,
+          geocodeProvider: 'none',
+          geocodeVersion: GEOCODE_VERSION,
+        };
+      }
+
+      const data = (await response.json()) as {
+        status?: string;
+        results?: Array<{
+          formatted_address?: string;
+          place_id?: string;
+          address_components?: Array<{
+            long_name?: string;
+            short_name?: string;
+            types?: string[];
+          }>;
+        }>;
+      };
+
+      if (data.status !== 'OK' || !data.results?.length) {
+        return {
+          placeId: null,
+          countryCode: null,
+          admin1: null,
+          admin2: null,
+          locality: null,
+          sublocality: null,
+          route: null,
+          formattedAddress: null,
+          geocodeProvider: 'none',
+          geocodeVersion: GEOCODE_VERSION,
+        };
+      }
+
+      const firstResult = data.results[0];
+      const components = firstResult.address_components ?? [];
+
+      return {
+        placeId: this.toNonEmptyString(firstResult.place_id),
+        countryCode: this.findAddressComponent(components, 'country', 'short_name'),
+        admin1: this.findAddressComponent(
+          components,
+          'administrative_area_level_1',
+          'long_name',
+        ),
+        admin2: this.findAddressComponent(
+          components,
+          'administrative_area_level_2',
+          'long_name',
+        ),
+        locality: this.findAddressComponent(components, 'locality', 'long_name'),
+        sublocality: this.findAddressComponent(
+          components,
+          'sublocality',
+          'long_name',
+        ),
+        route: this.findAddressComponent(components, 'route', 'long_name'),
+        formattedAddress: this.toNonEmptyString(firstResult.formatted_address),
+        geocodeProvider: 'google',
+        geocodeVersion: GEOCODE_VERSION,
+      };
+    } catch {
+      return {
+        placeId: null,
+        countryCode: null,
+        admin1: null,
+        admin2: null,
+        locality: null,
+        sublocality: null,
+        route: null,
+        formattedAddress: null,
+        geocodeProvider: 'none',
+        geocodeVersion: GEOCODE_VERSION,
+      };
+    }
+  }
+
+  private findAddressComponent(
+    components: Array<{
+      long_name?: string;
+      short_name?: string;
+      types?: string[];
+    }>,
+    type: string,
+    field: 'long_name' | 'short_name',
+  ) {
+    const component = components.find((item) => item.types?.includes(type));
+    return this.toNonEmptyString(component?.[field]);
+  }
+
+  private toNonEmptyString(value: string | null | undefined) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized ? normalized : null;
+  }
+
+  private normalizeStoragePrefix(value?: string) {
+    return (value ?? '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+      .replace(/\/+$/, '')
+      .replace(/\/{2,}/g, '/');
+  }
+
+  private normalizeCountryCode(value: string | null) {
+    const normalized = value
+      ?.trim()
+      .replace(/[^a-zA-Z0-9_-]/g, '')
+      .toUpperCase();
+
+    return normalized || UNKNOWN_COUNTRY;
+  }
+
+  private normalizeLocality(value: string | null) {
+    const normalized = (value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[-\s]+/g, '_')
+      .replace(/[^a-z0-9_]/g, '')
+      .replace(/_{2,}/g, '_')
+      .replace(/^_+/, '')
+      .replace(/_+$/, '');
+
+    return normalized || UNKNOWN_LOCALITY;
+  }
+
+  private normalizeExifDate(value?: string) {
+    if (!value) {
+      return UNKNOWN_DATE;
+    }
+
+    const parsed = new Date(value);
+
+    if (Number.isNaN(parsed.getTime())) {
+      return UNKNOWN_DATE;
+    }
+
+    return [
+      String(parsed.getUTCFullYear()).padStart(4, '0'),
+      String(parsed.getUTCMonth() + 1).padStart(2, '0'),
+      String(parsed.getUTCDate()).padStart(2, '0'),
+    ].join('_');
+  }
+
+  private normalizeFileName(fileName: string, idSeed: string) {
+    const trimmed = fileName.trim() || 'upload';
+    const extensionMatch = trimmed.match(/(\.[^.]+)$/);
+    const extension = extensionMatch
+      ? extensionMatch[1].replace(/[^a-zA-Z0-9.]/g, '')
+      : '';
+    const stem = extension
+      ? trimmed.slice(0, -extension.length)
+      : trimmed;
+    const normalizedStem = this.normalizePathSegment(stem, 'upload');
+    const shortId = idSeed.replace(/-/g, '').slice(0, 6).toLowerCase();
+
+    return extension
+      ? `${normalizedStem}_${shortId}${extension}`
+      : `${normalizedStem}_${shortId}`;
+  }
+
+  private normalizePathSegment(
+    value: string | null | undefined,
+    fallback: string,
+  ) {
+    const normalized = (value ?? '')
+      .trim()
+      .replace(/\s+/g, '_')
+      .replace(/[\\/]+/g, '_')
+      .replace(/[^a-zA-Z0-9._-]/g, '')
+      .replace(/_{2,}/g, '_')
+      .replace(/^[_./-]+/, '')
+      .replace(/[_./-]+$/, '');
+
+    return normalized || fallback;
   }
 
   private normalizePhotoId(photoId: string) {
@@ -587,64 +1296,21 @@ export class PhotosService {
     return photoId;
   }
 
-  private normalizeLimit(limit?: string) {
-    const parsed = Number(limit);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      return 20;
-    }
-    return Math.min(Math.floor(parsed), 100);
-  }
-
   private normalizeCleanupLimit(limit?: number) {
     const parsed = Number(limit);
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      return 100;
+      return DEFAULT_CLEANUP_BATCH_LIMIT;
     }
-    return Math.min(Math.floor(parsed), 1000);
+    return Math.min(Math.floor(parsed), MAX_CLEANUP_BATCH_LIMIT);
   }
 
   private getUploadPendingTimeoutMinutes() {
     const raw = process.env.UPLOAD_PENDING_TIMEOUT_MINUTES;
     const parsed = Number(raw);
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      return 60;
+      return DEFAULT_UPLOAD_PENDING_TIMEOUT_MINUTES;
     }
     return parsed;
-  }
-
-  private parseCursor(cursor?: string) {
-    if (!cursor) {
-      return null;
-    }
-
-    try {
-      const decoded = JSON.parse(
-        Buffer.from(cursor, 'base64').toString('utf8'),
-      ) as {
-        createdAt?: string;
-        id?: string;
-      };
-
-      if (!decoded.createdAt || !decoded.id || !/^\d+$/.test(decoded.id)) {
-        throw new Error('invalid cursor');
-      }
-
-      const createdAt = new Date(decoded.createdAt);
-      if (Number.isNaN(createdAt.getTime())) {
-        throw new Error('invalid cursor');
-      }
-
-      return {
-        createdAt,
-        id: decoded.id,
-      };
-    } catch {
-      throw new BadRequestException('invalid cursor');
-    }
-  }
-
-  private encodeCursor(cursor: { createdAt: string; id: string }) {
-    return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64');
   }
 
   private selectBestAsset(rows: DbAssetRow[]): PhotoAssetRecord | null {
@@ -701,6 +1367,13 @@ export class PhotosService {
     }
 
     return new Date(value).toISOString();
+  }
+
+  private mapAdminPhoto(row: DbAdminPhotoRow): PhotoRecord & { userId: string | null } {
+    return {
+      ...this.mapPhoto(row),
+      userId: row.user_id === null ? null : String(row.user_id),
+    };
   }
 
   private mapPhoto(row: DbPhotoRow): PhotoRecord {

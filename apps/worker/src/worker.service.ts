@@ -1,19 +1,30 @@
-import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { projectName } from '@glitter-atlas/shared';
-import { PhotosService } from '../../api/src/photos/photos.service';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  DEFAULT_CLEANUP_BATCH_LIMIT,
+  DEFAULT_UPLOAD_PENDING_TIMEOUT_MINUTES,
+  MAX_CLEANUP_BATCH_LIMIT,
+  PHOTO_STATUS_ABANDONED,
+  PHOTO_STATUS_PENDING,
+  projectName,
+} from '@glitter-atlas/shared';
+import { Pool } from 'pg';
 
 @Injectable()
 export class WorkerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WorkerService.name);
   private timer: NodeJS.Timeout | null = null;
   private isRunning = false;
-
-  constructor(
-    @Inject(PhotosService)
-    private readonly photosService: PhotosService,
-  ) {}
+  private pool: Pool | null = null;
 
   onModuleInit() {
+    const connectionString = process.env.DATABASE_URL?.trim();
+
+    if (!connectionString) {
+      throw new Error('DATABASE_URL is required');
+    }
+
+    this.pool = new Pool({ connectionString });
+
     const intervalMs = this.normalizeIntervalMs(
       process.env.WORKER_CLEANUP_INTERVAL_MS,
     );
@@ -37,10 +48,15 @@ export class WorkerService implements OnModuleInit, OnModuleDestroy {
     }, intervalMs);
   }
 
-  onModuleDestroy() {
+  async onModuleDestroy() {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+
+    if (this.pool) {
+      await this.pool.end();
+      this.pool = null;
     }
   }
 
@@ -55,10 +71,14 @@ export class WorkerService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    if (!this.pool) {
+      throw new Error('database pool is not initialized');
+    }
+
     this.isRunning = true;
 
     try {
-      const result = await this.photosService.cleanupAbandonedUploads({ limit });
+      const result = await this.cleanupAbandonedUploads(limit);
       this.logger.log(
         JSON.stringify({
           event: 'cleanup_result',
@@ -79,6 +99,61 @@ export class WorkerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async cleanupAbandonedUploads(limit: number) {
+    if (!this.pool) {
+      throw new Error('database pool is not initialized');
+    }
+
+    const timeoutMinutes = this.getUploadPendingTimeoutMinutes();
+    const cutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000);
+
+    const candidateResult = await this.pool.query<{ id: string }>(
+      `
+        select p.id
+        from photos p
+        where p.status = $3
+          and p.created_at < $1
+          and p.user_id is not null
+          and exists (
+            select 1
+            from photo_assets pa
+            where pa.photo_id = p.id
+          )
+        order by p.created_at asc, p.id asc
+        limit $2
+      `,
+      [cutoff, limit, PHOTO_STATUS_PENDING],
+    );
+
+    const photoIds = candidateResult.rows.map((row: { id: string }) => row.id);
+
+    if (photoIds.length === 0) {
+      return {
+        scannedCount: 0,
+        abandonedCount: 0,
+        cutoff: cutoff.toISOString(),
+      };
+    }
+
+    const updatedResult = await this.pool.query<{ id: string }>(
+      `
+        update photos
+        set status = $2,
+            updated_at = now()
+        where id = any($1::bigint[])
+          and user_id is not null
+        returning id
+      `,
+      [photoIds, PHOTO_STATUS_ABANDONED],
+    );
+
+    return {
+      scannedCount: photoIds.length,
+      abandonedCount: updatedResult.rows.length,
+      cutoff: cutoff.toISOString(),
+    };
+  }
+
   private normalizeIntervalMs(value?: string) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -88,10 +163,18 @@ export class WorkerService implements OnModuleInit, OnModuleDestroy {
   }
 
   private normalizeBatchLimit(value?: string) {
-    const parsed = Number(value);
+    const parsed = Number.parseInt(value ?? '', 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      return 100;
+      return DEFAULT_CLEANUP_BATCH_LIMIT;
     }
-    return Math.min(Math.floor(parsed), 1000);
+    return Math.min(parsed, MAX_CLEANUP_BATCH_LIMIT);
+  }
+
+  private getUploadPendingTimeoutMinutes() {
+    const parsed = Number(process.env.UPLOAD_PENDING_TIMEOUT_MINUTES);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return DEFAULT_UPLOAD_PENDING_TIMEOUT_MINUTES;
+    }
+    return parsed;
   }
 }

@@ -1,7 +1,8 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { clearPendingEntryRedirectState } from './entry_redirect_state';
 
 type PasswordResetTarget = {
   ok: boolean;
@@ -15,7 +16,9 @@ export function ResetPasswordClient() {
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const redirectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selector = searchParams.get('selector');
   const token = searchParams.get('token');
@@ -72,6 +75,15 @@ export function ResetPasswordClient() {
     };
   }, [selector, token]);
 
+
+  useEffect(() => {
+    return () => {
+      if (redirectTimeoutRef.current) {
+        clearTimeout(redirectTimeoutRef.current);
+      }
+    };
+  }, []);
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -102,6 +114,7 @@ export function ResetPasswordClient() {
 
     setIsSubmitting(true);
     setError(null);
+    setSuccessMessage(null);
 
     try {
       const response = await fetch('/api/auth/password-reset/complete', {
@@ -128,7 +141,11 @@ export function ResetPasswordClient() {
         throw new Error(message ?? 'Failed to reset password.');
       }
 
-      router.replace('/');
+      setSuccessMessage('Password set successfully. Redirecting to sign in...');
+      redirectTimeoutRef.current = setTimeout(() => {
+        clearPendingEntryRedirectState();
+        router.replace(`/access?email=${encodeURIComponent(email)}&passwordUpdated=1`);
+      }, 800);
     } catch (submitError) {
       const message =
         submitError instanceof Error
@@ -143,14 +160,17 @@ export function ResetPasswordClient() {
   return (
     <main className="page">
       <div className="card auth-card">
-        <p className="eyebrow">Password Reset</p>
-        <h1>Reset your password</h1>
+        <p className="eyebrow">Password Setup</p>
+        <h1>Set your password</h1>
         {error ? <p className="status status-error">{error}</p> : null}
-        {email === null ? (
-          <p>Loading your approved email...</p>
+        {successMessage ? <p className="status status-success">{successMessage}</p> : null}
+        {successMessage ? (
+          <p>Returning you to the access page with your account email ready.</p>
+        ) : email === null ? (
+          <p>Loading your account email...</p>
         ) : (
           <>
-            <p>Your approved email remains the fixed account identifier.</p>
+            <p>Your account email remains the fixed archive identifier.</p>
             <form className="auth-form" onSubmit={handleSubmit}>
               <label className="field">
                 <span>Email</span>
@@ -189,7 +209,7 @@ export function ResetPasswordClient() {
                 />
               </label>
               <button className="button" type="submit" disabled={isSubmitting}>
-                {isSubmitting ? 'Saving...' : 'Set new password'}
+                {isSubmitting ? 'Saving...' : 'Save password'}
               </button>
             </form>
           </>

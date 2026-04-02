@@ -53,6 +53,11 @@ export function VerifyClient() {
           return;
         }
 
+        if (data.sessionType === 'temporary') {
+          router.replace('/access');
+          return;
+        }
+
         router.replace(data.activationRequired ? '/auth/activate' : '/dashboard');
       } catch (verifyError) {
         if (!active) {

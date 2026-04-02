@@ -1,6 +1,8 @@
+import type { SessionState } from '@glitter-atlas/shared';
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -10,16 +12,14 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { compare, hash } from 'bcryptjs';
 import { createHash, randomBytes } from 'node:crypto';
+import { resolveMx } from 'node:dns/promises';
 import { DatabaseService } from '../database/database.service';
+import {
+  renderActivationLinkEmail,
+  renderPasswordActionEmail,
+  renderVerificationEmail,
+} from '../mail/transactional-email';
 import { MailService } from '../mail/mail.service';
-
-export type SessionState = {
-  authenticated: boolean;
-  sessionType: 'temporary' | 'activation' | 'approved' | null;
-  activationRequired: boolean;
-  email: string | null;
-  isSuperAdmin: boolean;
-};
 
 type PendingApprovalCandidate = {
   email: string;
@@ -33,12 +33,35 @@ type ActivationSessionContext = {
   approvedUserId: string;
 };
 
+type ApprovedSessionContext = {
+  email: string;
+  approvedUserId: number;
+  isSuperAdmin: boolean;
+};
+
 type QueryExecutor = {
   query: <T extends Record<string, unknown>>(
     queryText: string,
     values?: readonly unknown[],
   ) => Promise<{ rows: T[] }>;
 };
+
+const emailReceivabilityWarning =
+  'This email address may not be able to receive mail. Please verify the address and try again.';
+
+const memberDirectoryTableName = 'approved_users';
+const memberDirectoryPrimaryKey = 'id';
+const protectedSuperAdminEmail = 'gim@glitter.kr';
+const memberDirectoryColumnOrder = [
+  'id',
+  'email',
+  'normalized_email',
+  'is_active',
+  'created_at',
+  'updated_at',
+  'password_hash',
+  'is_super_admin',
+] as const;
 
 @Injectable()
 export class AuthService {
@@ -79,12 +102,14 @@ export class AuthService {
       expires_at: Date | string;
       revoked_at: Date | string | null;
       is_super_admin: boolean | null;
+      password_hash: string | null;
     }>(
       `
-        select s.email, s.session_type, s.expires_at, s.revoked_at, u.is_super_admin
+        select s.email, s.session_type, s.expires_at, s.revoked_at, u.is_super_admin, u.password_hash
         from auth_sessions s
         left join approved_users u
-          on u.id = s.approved_user_id
+          on u.normalized_email = s.normalized_email
+         and u.is_active = true
         where session_token_hash = $1
         limit 1
       `,
@@ -105,6 +130,70 @@ export class AuthService {
       return this.buildAnonymousSession();
     }
 
+    if (row.session_type !== 'approved' && row.password_hash) {
+      return this.buildAnonymousSession();
+    }
+
+    await this.databaseService.pool.query(
+      `
+        update auth_sessions
+        set last_seen_at = now()
+        where session_token_hash = $1
+      `,
+      [this.hashValue(sessionToken)],
+    );
+
+    const sessionState: SessionState = {
+      authenticated: true,
+      sessionType: row.session_type,
+      activationRequired: row.session_type === 'activation',
+      email: row.email,
+      isSuperAdmin: Boolean(row.is_super_admin),
+    };
+
+    return sessionState;
+  }
+
+  async getApprovedSessionContext(
+    sessionToken?: string | null,
+  ): Promise<ApprovedSessionContext> {
+    if (!sessionToken) {
+      throw new UnauthorizedException('authentication required');
+    }
+
+    const result = await this.databaseService.pool.query<{
+      email: string;
+      approved_user_id: number | null;
+      session_type: 'temporary' | 'activation' | 'approved';
+      expires_at: Date | string;
+      revoked_at: Date | string | null;
+      is_super_admin: boolean | null;
+    }>(
+      `
+        select s.email, s.approved_user_id, s.session_type, s.expires_at, s.revoked_at, u.is_super_admin
+        from auth_sessions s
+        left join approved_users u
+          on u.id = s.approved_user_id
+        where session_token_hash = $1
+        limit 1
+      `,
+      [this.hashValue(sessionToken)],
+    );
+
+    if (result.rows.length === 0) {
+      throw new UnauthorizedException('authentication required');
+    }
+
+    const row = result.rows[0];
+
+    if (row.revoked_at || new Date(row.expires_at).getTime() <= Date.now()) {
+      throw new UnauthorizedException('authentication required');
+    }
+
+    if (row.session_type !== 'approved' || row.approved_user_id === null) {
+      throw new ForbiddenException('approved access required');
+    }
+
     await this.databaseService.pool.query(
       `
         update auth_sessions
@@ -115,10 +204,8 @@ export class AuthService {
     );
 
     return {
-      authenticated: true,
-      sessionType: row.session_type,
-      activationRequired: row.session_type === 'activation',
       email: row.email,
+      approvedUserId: row.approved_user_id,
       isSuperAdmin: Boolean(row.is_super_admin),
     };
   }
@@ -129,6 +216,7 @@ export class AuthService {
     requestedUserAgent?: string | null;
   }) {
     const normalizedEmail = this.normalizeEmail(input.email);
+    await this.assertEmailReceivable(normalizedEmail);
     const accountResult = await this.databaseService.pool.query<{
       password_hash: string | null;
     }>(
@@ -158,12 +246,16 @@ export class AuthService {
       `${this.appBaseUrl}/auth/verify?selector=${encodeURIComponent(selector)}` +
       `&token=${encodeURIComponent(token)}`;
 
+    const verificationEmail = renderVerificationEmail({
+      actionUrl: verifyUrl,
+      expiresInMinutes: 15,
+    });
+
     await this.mailService.sendMail({
       to: normalizedEmail,
       subject: 'GlitterAtlas Sign-In Link',
-      text:
-        `Open this sign-in link to verify your email:\n\n${verifyUrl}\n\n` +
-        'This link expires in 15 minutes and can only be used once.',
+      text: verificationEmail.text,
+      html: verificationEmail.html,
     });
 
     return { ok: true };
@@ -396,6 +488,118 @@ export class AuthService {
     };
   }
 
+  async listMembersDirectory() {
+    const result = await this.databaseService.pool.query<{
+      id: number;
+      email: string;
+      normalized_email: string;
+      is_active: boolean;
+      created_at: Date | string;
+      updated_at: Date | string;
+      password_hash: string | null;
+      is_super_admin: boolean;
+    }>(
+      `
+        select id, email, normalized_email, is_active, created_at, updated_at, password_hash, is_super_admin
+        from approved_users
+        order by id asc
+      `,
+    );
+
+    return {
+      tableName: memberDirectoryTableName,
+      primaryKey: memberDirectoryPrimaryKey,
+      deleteMode: 'soft_delete' as const,
+      columnOrder: [...memberDirectoryColumnOrder],
+      maskedColumns: ['password_hash'],
+      items: result.rows.map((row) => ({
+        id: row.id,
+        email: row.email,
+        normalized_email: row.normalized_email,
+        is_active: row.is_active,
+        created_at: new Date(row.created_at).toISOString(),
+        updated_at: new Date(row.updated_at).toISOString(),
+        password_hash: row.password_hash ? '[stored]' : '[not set]',
+        is_super_admin: row.is_super_admin,
+        isProtected:
+          row.is_super_admin || row.normalized_email === protectedSuperAdminEmail,
+      })),
+    };
+  }
+
+  async removeMember(input: { id?: number | string }) {
+    const memberId = Number(input.id);
+
+    if (!Number.isInteger(memberId) || memberId <= 0) {
+      throw new BadRequestException('member id is required');
+    }
+
+    const memberResult = await this.databaseService.pool.query<{
+      id: number;
+      normalized_email: string;
+      is_active: boolean;
+      is_super_admin: boolean;
+    }>(
+      `
+        select id, normalized_email, is_active, is_super_admin
+        from approved_users
+        where id = $1
+        limit 1
+      `,
+      [memberId],
+    );
+
+    if (memberResult.rows.length === 0) {
+      throw new NotFoundException('member not found');
+    }
+
+    const member = memberResult.rows[0];
+
+    if (member.is_super_admin || member.normalized_email === protectedSuperAdminEmail) {
+      throw new ForbiddenException('super admin members cannot be removed');
+    }
+
+    if (!member.is_active) {
+      throw new ConflictException('member is already inactive');
+    }
+
+    const client = await this.databaseService.pool.connect();
+
+    try {
+      await client.query('begin');
+      await client.query(
+        `
+          update approved_users
+          set is_active = false,
+              updated_at = now()
+          where id = $1
+        `,
+        [memberId],
+      );
+      await client.query(
+        `
+          update auth_sessions
+          set revoked_at = now()
+          where approved_user_id = $1
+            and revoked_at is null
+        `,
+        [memberId],
+      );
+      await client.query('commit');
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    return {
+      ok: true,
+      id: memberId,
+      deleteMode: 'soft_delete' as const,
+    };
+  }
+
   async approveEmail(input: { email?: string }) {
     const normalizedEmail = this.normalizeEmail(input.email);
 
@@ -624,7 +828,7 @@ export class AuthService {
       await client.query(
         `
           update auth_sessions
-          set session_type = 'approved'
+          set revoked_at = now()
           where id = $1
         `,
         [activationSession.sessionId],
@@ -662,13 +866,19 @@ export class AuthService {
       requestedUserAgent: null,
     });
 
+    const activationUrl =
+      `${this.appBaseUrl}/auth/complete?selector=${encodeURIComponent(selector)}` +
+      `&token=${encodeURIComponent(token)}`;
+    const activationEmail = renderActivationLinkEmail({
+      actionUrl: activationUrl,
+      expiresInMinutes: 15,
+    });
+
     await this.mailService.sendMail({
       to: activationSession.email,
       subject: 'GlitterAtlas Account Activation Link',
-      text:
-        `Use this email to continue activating your account.\n\n` +
-        `Continue here: ${this.appBaseUrl}/auth/complete?selector=${encodeURIComponent(selector)}&token=${encodeURIComponent(token)}\n\n` +
-        'This link expires in 15 minutes and can only be used once.',
+      text: activationEmail.text,
+      html: activationEmail.html,
     });
 
     return {
@@ -683,26 +893,14 @@ export class AuthService {
     requestedUserAgent?: string | null;
   }) {
     const normalizedEmail = this.normalizeEmail(input.email);
-    const userResult = await this.databaseService.pool.query<{
-      email: string;
-      password_hash: string | null;
-    }>(
-      `
-        select email, password_hash
-        from approved_users
-        where normalized_email = $1
-          and is_active = true
-        limit 1
-      `,
-      [normalizedEmail],
-    );
+    const user = await this.findPasswordResetEligibleUser(normalizedEmail);
 
-    if (userResult.rows.length === 0 || !userResult.rows[0].password_hash) {
-      throw new ConflictException('password reset is available only for activated accounts');
+    if (user === null) {
+      throw new ConflictException('password setup is not available for this account');
     }
 
     const { selector, token } = await this.createEmailVerificationToken({
-      email: userResult.rows[0].email,
+      email: user.email,
       purpose: 'password_reset',
       expiresInMinutes: 15,
       requestedIp: input.requestedIp ?? null,
@@ -712,18 +910,25 @@ export class AuthService {
     const resetUrl =
       `${this.appBaseUrl}/auth/reset-password?selector=${encodeURIComponent(selector)}` +
       `&token=${encodeURIComponent(token)}`;
+    const isInitialSetup = user.password_hash === null;
+    const passwordEmail = renderPasswordActionEmail({
+      actionUrl: resetUrl,
+      expiresInMinutes: 15,
+      mode: isInitialSetup ? 'setup' : 'reset',
+    });
 
     await this.mailService.sendMail({
-      to: userResult.rows[0].email,
-      subject: 'GlitterAtlas Password Reset',
-      text:
-        `Use this link to reset your password:\n\n${resetUrl}\n\n` +
-        'This link expires in 15 minutes and can only be used once.',
+      to: user.email,
+      subject: isInitialSetup
+        ? 'GlitterAtlas Password Setup'
+        : 'GlitterAtlas Password Reset',
+      text: passwordEmail.text,
+      html: passwordEmail.html,
     });
 
     return {
       ok: true,
-      email: userResult.rows[0].email,
+      email: user.email,
     };
   }
 
@@ -739,10 +944,9 @@ export class AuthService {
 
     const userResult = await this.databaseService.pool.query<{
       email: string;
-      password_hash: string | null;
     }>(
       `
-        select email, password_hash
+        select email
         from approved_users
         where normalized_email = $1
           and is_active = true
@@ -751,8 +955,8 @@ export class AuthService {
       [tokenRow.normalizedEmail],
     );
 
-    if (userResult.rows.length === 0 || !userResult.rows[0].password_hash) {
-      throw new ConflictException('password reset is available only for activated accounts');
+    if (userResult.rows.length === 0) {
+      throw new ConflictException('password setup is not available for this account');
     }
 
     return {
@@ -822,8 +1026,8 @@ export class AuthService {
         [tokenRow.normalizedEmail],
       );
 
-      if (userResult.rows.length === 0 || !userResult.rows[0].password_hash) {
-        throw new ConflictException('password reset is available only for activated accounts');
+      if (userResult.rows.length === 0) {
+        throw new ConflictException('password setup is not available for this account');
       }
 
       const passwordHash = await hash(password, 12);
@@ -839,6 +1043,27 @@ export class AuthService {
         [userResult.rows[0].email, passwordHash, userResult.rows[0].id],
       );
 
+      await client.query(
+        `
+          update auth_sessions
+          set revoked_at = now()
+          where normalized_email = $1
+            and revoked_at is null
+            and session_type in ('temporary', 'activation')
+        `,
+        [tokenRow.normalizedEmail],
+      );
+
+      await client.query(
+        `
+          delete from email_verification_tokens
+          where normalized_email = $1
+            and purpose = 'access_request'
+            and used_at is null
+        `,
+        [tokenRow.normalizedEmail],
+      );
+
       await client.query('commit');
 
       return {
@@ -851,6 +1076,78 @@ export class AuthService {
     } finally {
       client.release();
     }
+  }
+
+  private async assertEmailReceivable(normalizedEmail: string) {
+    const domain = normalizedEmail.split('@')[1] ?? '';
+
+    if (!this.isValidEmailDomain(domain)) {
+      throw new BadRequestException(emailReceivabilityWarning);
+    }
+
+    try {
+      const mxRecords = await this.resolveMxRecordsWithTimeout(domain, 2500);
+      const hasUsableMxRecord = mxRecords.some((record) => {
+        const exchange = record.exchange.trim().replace(/\.+$/, '').toLowerCase();
+        return exchange.length > 0 && this.isValidEmailDomain(exchange);
+      });
+
+      if (!hasUsableMxRecord) {
+        throw new BadRequestException(emailReceivabilityWarning);
+      }
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      if (this.shouldRejectEmailReceivabilityLookup(error)) {
+        throw new BadRequestException(emailReceivabilityWarning);
+      }
+    }
+  }
+
+  private isValidEmailDomain(domain: string) {
+    if (!domain || domain.length > 253) {
+      return false;
+    }
+
+    const labels = domain.split('.');
+
+    if (labels.length < 2) {
+      return false;
+    }
+
+    return labels.every((label) => (
+      label.length > 0 &&
+      label.length <= 63 &&
+      /^[a-z0-9-]+$/i.test(label) &&
+      !label.startsWith('-') &&
+      !label.endsWith('-')
+    ));
+  }
+
+  private async resolveMxRecordsWithTimeout(domain: string, timeoutMs: number) {
+    return await Promise.race([
+      this.resolveMxRecords(domain),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('mx lookup timeout'));
+        }, timeoutMs);
+      }),
+    ]);
+  }
+
+  private async resolveMxRecords(domain: string) {
+    return await resolveMx(domain);
+  }
+
+  private shouldRejectEmailReceivabilityLookup(error: unknown) {
+    if (typeof error !== 'object' || error === null || !('code' in error)) {
+      return false;
+    }
+
+    const code = String(error.code).toUpperCase();
+    return ['ENOTFOUND', 'ENODATA', 'ENONAME', 'EBADNAME', 'EINVAL'].includes(code);
   }
 
   private normalizeEmail(email?: string) {
@@ -913,6 +1210,90 @@ export class AuthService {
       normalizedEmail: sessionRow.normalized_email,
       approvedUserId: sessionRow.approved_user_id,
     };
+  }
+
+
+  private async findPasswordResetEligibleUser(
+    normalizedEmail: string,
+    client: QueryExecutor = this.databaseService.pool,
+  ) {
+    const userResult = await client.query<{
+      id: string;
+      email: string;
+      password_hash: string | null;
+    }>(
+      `
+        select id, email, password_hash
+        from approved_users
+        where normalized_email = $1
+          and is_active = true
+        limit 1
+      `,
+      [normalizedEmail],
+    );
+
+    if (userResult.rows.length > 0) {
+      return userResult.rows[0];
+    }
+
+    const requestResult = await client.query<{
+      email: string;
+    }>(
+      `
+        select email
+        from email_verification_tokens
+        where normalized_email = $1
+          and purpose = 'access_request'
+          and used_at is null
+        order by created_at desc
+        limit 1
+      `,
+      [normalizedEmail],
+    );
+
+    if (requestResult.rows.length === 0) {
+      return null;
+    }
+
+    const insertResult = await client.query<{
+      id: string;
+      email: string;
+      password_hash: string | null;
+    }>(
+      `
+        insert into approved_users (
+          email,
+          normalized_email,
+          is_active,
+          is_super_admin
+        )
+        values ($1, $2, true, false)
+        on conflict (normalized_email) do nothing
+        returning id, email, password_hash
+      `,
+      [requestResult.rows[0].email, normalizedEmail],
+    );
+
+    if (insertResult.rows.length > 0) {
+      return insertResult.rows[0];
+    }
+
+    const fallbackResult = await client.query<{
+      id: string;
+      email: string;
+      password_hash: string | null;
+    }>(
+      `
+        select id, email, password_hash
+        from approved_users
+        where normalized_email = $1
+          and is_active = true
+        limit 1
+      `,
+      [normalizedEmail],
+    );
+
+    return fallbackResult.rows[0] ?? null;
   }
 
   private async createEmailVerificationToken(input: {
@@ -1019,12 +1400,14 @@ export class AuthService {
   }
 
   private buildAnonymousSession(): SessionState {
-    return {
+    const sessionState: SessionState = {
       authenticated: false,
       sessionType: null,
       activationRequired: false,
       email: null,
       isSuperAdmin: false,
     };
+
+    return sessionState;
   }
 }

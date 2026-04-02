@@ -26,5 +26,11 @@
   },
   "dependencies": {
     "exifr": "^7.1.3"
-  }
+  },
+  "browserslist": [
+    "Chrome >= 90",
+    "Edge >= 90",
+    "Firefox >= 90",
+    "Safari >= 14"
+  ]
 }

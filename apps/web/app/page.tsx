@@ -1,5 +1,5 @@
-import { AuthGate } from '../components/auth_gate';
+import { LandingGate } from '../components/landing_gate';
 
 export default function HomePage() {
-  return <AuthGate />;
+  return <LandingGate />;
 }

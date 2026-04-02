@@ -1,20 +1,20 @@
 'use client';
 
+import type { SessionState } from '@glitter-atlas/shared';
 import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-
-type SessionState = {
-  authenticated: boolean;
-  sessionType: 'temporary' | 'activation' | 'approved' | null;
-  activationRequired: boolean;
-  email: string | null;
-  isSuperAdmin: boolean;
-};
+import {
+  shouldLoadPendingApprovals,
+  shouldRedirectApprovedUserToDashboard,
+} from './auth_gate.logic';
 
 type PendingApprovalCandidate = {
   email: string;
   lastSeenAt: string;
 };
+
+const emailReceivabilityWarning =
+  'This email address may not be able to receive mail. Please verify the address and try again.';
 
 const anonymousSession: SessionState = {
   authenticated: false,
@@ -31,9 +31,32 @@ export function AuthGate() {
   const [password, setPassword] = useState('');
   const [emailSent, setEmailSent] = useState(false);
   const [passwordResetSent, setPasswordResetSent] = useState(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApprovalCandidate[]>([]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const emailFromQuery = params.get('email');
+    const passwordUpdated = params.get('passwordUpdated');
+
+    if (emailFromQuery) {
+      setEmail(emailFromQuery);
+    }
+
+    if (passwordUpdated === '1') {
+      setSuccessMessage('Password set successfully. Please sign in.');
+      return;
+    }
+
+    setSuccessMessage(null);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -54,7 +77,7 @@ export function AuthGate() {
           return;
         }
 
-        if (data.authenticated && !data.activationRequired) {
+        if (shouldRedirectApprovedUserToDashboard(data)) {
           router.replace('/dashboard');
           return;
         }
@@ -62,29 +85,7 @@ export function AuthGate() {
         setSession(data);
         setEmailSent(false);
         setPasswordResetSent(false);
-
-        if (data.authenticated && data.isSuperAdmin) {
-          const pendingResponse = await fetch('/api/auth/admin/pending-approvals', {
-            credentials: 'same-origin',
-          });
-
-          if (!pendingResponse.ok) {
-            throw new Error('Failed to load pending approvals.');
-          }
-
-          const pendingData = (await pendingResponse.json()) as {
-            items?: PendingApprovalCandidate[];
-          };
-
-          if (!active) {
-            return;
-          }
-
-          setPendingApprovals(pendingData.items ?? []);
-          return;
-        }
-
-        setPendingApprovals([]);
+        setWarningMessage(null);
       } catch (fetchError) {
         if (!active) {
           return;
@@ -106,6 +107,54 @@ export function AuthGate() {
     };
   }, [router]);
 
+  useEffect(() => {
+    let active = true;
+
+    async function loadPendingApprovals() {
+      if (session === null || !shouldLoadPendingApprovals(session)) {
+        setPendingApprovals([]);
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/auth/admin/pending-approvals', {
+          credentials: 'same-origin',
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to load pending approvals.');
+        }
+
+        const data = (await response.json()) as {
+          items?: PendingApprovalCandidate[];
+        };
+
+        if (!active) {
+          return;
+        }
+
+        setPendingApprovals(data.items ?? []);
+      } catch (fetchError) {
+        if (!active) {
+          return;
+        }
+
+        const message =
+          fetchError instanceof Error
+            ? fetchError.message
+            : 'Failed to load pending approvals.';
+        setError(message);
+        setPendingApprovals([]);
+      }
+    }
+
+    void loadPendingApprovals();
+
+    return () => {
+      active = false;
+    };
+  }, [session?.authenticated, session?.isSuperAdmin]);
+
   async function handleEmailSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -118,6 +167,8 @@ export function AuthGate() {
 
     setIsSubmitting(true);
     setError(null);
+    setSuccessMessage(null);
+    setWarningMessage(null);
     setPasswordResetSent(false);
 
     try {
@@ -146,7 +197,13 @@ export function AuthGate() {
         submitError instanceof Error
           ? submitError.message
           : 'Failed to start email sign-in.';
-      setError(message);
+
+      if (message === emailReceivabilityWarning) {
+        setWarningMessage(message);
+        setError(null);
+      } else {
+        setError(message);
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -169,6 +226,8 @@ export function AuthGate() {
 
     setIsSubmitting(true);
     setError(null);
+    setSuccessMessage(null);
+    setWarningMessage(null);
     setPasswordResetSent(false);
 
     try {
@@ -203,7 +262,9 @@ export function AuthGate() {
       setPassword('');
       setEmailSent(false);
       setPendingApprovals([]);
-      router.replace('/dashboard');
+      if (shouldRedirectApprovedUserToDashboard(data)) {
+        router.replace('/dashboard');
+      }
     } catch (loginError) {
       const message =
         loginError instanceof Error
@@ -215,8 +276,8 @@ export function AuthGate() {
     }
   }
 
-  async function handlePasswordReset() {
-    const normalizedEmail = email.trim();
+  async function startPasswordReset(emailAddress: string) {
+    const normalizedEmail = emailAddress.trim();
 
     if (!normalizedEmail) {
       setError('Email is required.');
@@ -225,6 +286,8 @@ export function AuthGate() {
 
     setIsSubmitting(true);
     setError(null);
+    setSuccessMessage(null);
+    setWarningMessage(null);
     setPasswordResetSent(false);
 
     try {
@@ -244,7 +307,7 @@ export function AuthGate() {
         const message = Array.isArray(data?.message)
           ? data?.message[0]
           : data?.message;
-        throw new Error(message ?? 'Failed to send password reset email.');
+        throw new Error(message ?? 'Failed to send password setup email.');
       }
 
       setPasswordResetSent(true);
@@ -252,11 +315,15 @@ export function AuthGate() {
       const message =
         resetError instanceof Error
           ? resetError.message
-          : 'Failed to send password reset email.';
+          : 'Failed to send password setup email.';
       setError(message);
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  async function handlePasswordReset() {
+    await startPasswordReset(email);
   }
 
   async function handleLogout() {
@@ -347,7 +414,7 @@ export function AuthGate() {
               : !session.authenticated
                 ? emailSent
                   ? 'Check your email'
-                  : 'Sign in with email'
+                  : 'Sign in to the archive'
                 : session.sessionType === 'temporary'
                   ? 'Temporary access'
                   : session.activationRequired
@@ -362,24 +429,34 @@ export function AuthGate() {
         ) : (
           <>
             {error ? <p className="status status-error">{error}</p> : null}
+            {successMessage ? <p className="status status-success">{successMessage}</p> : null}
             {!session.authenticated ? (
               emailSent ? (
                 <>
                   <p>We sent a sign-in link to the email address you entered.</p>
                   <div className="surface-note">
                     <h2>Next step</h2>
-                    <p>Open the link in your inbox to verify your email and start a session.</p>
+                    <p>Open the link in your inbox to verify access and continue activation.</p>
+                  </div>
+                <div className="surface-note">
+                    <h2>Access policy</h2>
+                    <p>Only verified access can proceed.</p>
                   </div>
                 </>
               ) : (
                 <>
                   {passwordResetSent ? (
                     <div className="surface-note">
-                      <h2>Password reset email sent</h2>
-                      <p>Open the reset link in your inbox to set a new password for the approved account.</p>
+                      <h2>Password email sent</h2>
+                      <p>Use the email link to complete activation or reset your password, then return here to sign in.</p>
                     </div>
                   ) : null}
-                  <p>Use your approved email and password, or request a one-time email link.</p>
+                  <p>Access is limited to approved or previously activated accounts. This is not a public registration service.</p>
+                  <div className="surface-note">
+                    <h2>Before you continue</h2>
+                    <p>If you have completed email verification, set your password and sign in.</p>
+                    <p>If you have not yet activated access, complete the verification process first.</p>
+                  </div>
                   <form className="auth-form" onSubmit={handlePasswordLogin}>
                     <label className="field">
                       <span>Email</span>
@@ -414,13 +491,18 @@ export function AuthGate() {
                       onClick={handlePasswordReset}
                       disabled={isSubmitting}
                     >
-                      {isSubmitting ? 'Working...' : 'Reset password via email'}
+                      {isSubmitting ? 'Working...' : 'Set or reset password via email'}
                     </button>
                   </form>
                   <div className="surface-note">
-                    <h2>Email link</h2>
-                    <p>Use a one-time email link if you are requesting temporary access or activating a newly approved account.</p>
+                    <h2>Verified access</h2>
+                    <p>Use a one-time email link only to verify access or continue activation.</p>
                   </div>
+                  <div className="surface-note">
+                    <h2>Support note</h2>
+                    <p>If you cannot access your account, use the password reset option or request access again using the same email.</p>
+                  </div>
+                  <p>Only verified access can proceed.</p>
                   <form className="auth-form" onSubmit={handleEmailSubmit}>
                     <label className="field">
                       <span>Email</span>
@@ -453,16 +535,30 @@ export function AuthGate() {
                     <dd>{session.email}</dd>
                   </div>
                 </dl>
-                <p>Your email is verified, but this session has temporary access only.</p>
+                <p>Your request has verified access. Complete activation by setting your password, then sign in normally.</p>
                 <div className="surface-note">
                   <h2>Current access</h2>
-                  <p>Protected photo features remain unavailable until approval or registration is completed.</p>
+                  <p>This is a restricted archive. Temporary access remains limited until activation is complete.</p>
                 </div>
                 <div className="surface-note">
-                  <h2>Status</h2>
-                  <p>Awaiting approval or registration.</p>
+                  <h2>Activation</h2>
+                  <p>Send yourself a password setup email, complete the link, then return to sign in to the archive.</p>
                 </div>
-                <button className="button" type="button" onClick={handleLogout} disabled={isSubmitting}>
+                {passwordResetSent ? (
+                  <div className="surface-note">
+                    <h2>Password email sent</h2>
+                    <p>Open the email link in your inbox to finish first-time password setup.</p>
+                  </div>
+                ) : null}
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => void startPasswordReset(session.email ?? '')}
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? 'Sending...' : 'Send password setup email'}
+                </button>
+                <button className="button button-secondary" type="button" onClick={handleLogout} disabled={isSubmitting}>
                   {isSubmitting ? 'Signing out...' : 'Log out'}
                 </button>
               </>
@@ -479,10 +575,10 @@ export function AuthGate() {
                     <dd>{session.email}</dd>
                   </div>
                 </dl>
-                <p>Your email is approved, but your account has not been activated yet.</p>
+                <p>Your account has verified access, but activation is not complete yet.</p>
                 <div className="surface-note">
-                  <h2>Next step</h2>
-                  <p>Finish account activation to create your password and start using approved access.</p>
+                  <h2>Activation</h2>
+                  <p>Finish activation to create your password and continue into the archive.</p>
                 </div>
                 <a className="button button-link" href="/auth/activate">
                   Activate account
@@ -549,6 +645,20 @@ export function AuthGate() {
           </>
         )}
       </div>
+      {warningMessage ? (
+        <div className="dialog-backdrop" role="presentation">
+          <div className="card dialog-card" role="alertdialog" aria-modal="true" aria-labelledby="auth-warning-title">
+            <p className="eyebrow">Mail Check</p>
+            <h2 id="auth-warning-title">Email warning</h2>
+            <p>{warningMessage}</p>
+            <div className="button-row dialog-actions">
+              <button className="button button-secondary" type="button" onClick={() => setWarningMessage(null)}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

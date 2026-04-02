@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
-import { DevPhotosController } from './dev-photos.controller';
+import { AdminPhotosController } from './admin-photos.controller';
 import { PhotosController } from './photos.controller';
 import { PhotosService } from './photos.service';
 
 @Module({
   imports: [AuthModule],
-  controllers: [PhotosController, DevPhotosController],
+  controllers: [PhotosController, AdminPhotosController],
   providers: [PhotosService],
   exports: [PhotosService],
 })

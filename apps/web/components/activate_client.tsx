@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { clearPendingEntryRedirectState } from './entry_redirect_state';
 
 type SessionState = {
   authenticated: boolean;
@@ -114,7 +115,8 @@ export function ActivateClient() {
         throw new Error(message ?? 'Failed to activate account.');
       }
 
-      router.replace('/dashboard');
+      clearPendingEntryRedirectState();
+      router.replace(`/access?email=${encodeURIComponent(session.email)}&passwordUpdated=1`);
     } catch (submitError) {
       const message =
         submitError instanceof Error

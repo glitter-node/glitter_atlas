@@ -7,9 +7,9 @@ export default function ResetPasswordPage() {
       fallback={
         <main className="page">
           <div className="card auth-card">
-            <p className="eyebrow">Password Reset</p>
-            <h1>Reset your password</h1>
-            <p>Loading your approved email...</p>
+            <p className="eyebrow">Password Setup</p>
+            <h1>Set your password</h1>
+            <p>Loading your account email...</p>
           </div>
         </main>
       }
