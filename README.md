@@ -31,7 +31,7 @@ The repository is organized so that each runtime application can be built and st
 - PostgreSQL
 - `pg`
 - Drizzle ORM
-- AWS SDK for S3-compatible storage
+- MinIO object storage with presigned URL-based direct upload
 
 ### Email
 
